@@ -18,7 +18,10 @@ sounds and music are original (no film names, characters or assets).
   violet for Obsidian.
 
 ## Code
-- Source: /mnt/project-files/enchanted-chess (zip: enchanted-chess-milestone1.zip)
+- Source: H:\Projects\enchanted-chess-milestone1\enchanted-chess
+- GitHub: https://github.com/nahiyan-al-mahin/enchanted-chess (remote
+  "origin"; main = latest work; also milestone-2-online, milestone-3).
+  Signed in via Git Credential Manager (browser sign-in); gh CLI not installed.
 - Run: `npm install`; terminal 1 `npm run server` (port 3050, PORT env
   overrides); terminal 2 `npm run dev`; open http://localhost:5173
   (title screen). `?local` = offline hot-seat mode with Undo, no intro.
@@ -164,3 +167,6 @@ sounds and music are original (no film names, characters or assets).
   servers held 3050): headers, socket handshake, no localhost in the
   bundle, and two headless tabs playing Fool's mate by clicking the 3D
   board (camera projection maths; dev shortcuts are absent in production).
+- 2026-10-02: Deployment prep committed (6763db2). main fast-forwarded to
+  it; all branches pushed to GitHub (user signed in via Git Credential
+  Manager). Next: create the Render web service from main.
