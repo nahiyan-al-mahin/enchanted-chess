@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Enchanted Chess</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <!-- The 3D scene is drawn into this canvas by Three.js -->
+    <canvas id="scene"></canvas>
+
+    <!-- HUD: the small panel with the turn, status and buttons -->
+    <div id="hud">
+      <h1>Enchanted Chess</h1>
+      <div id="turn"></div>
+      <div id="status"></div>
+      <div class="buttons">
+        <button id="btn-new">New game</button>
+        <button id="btn-undo">Undo</button>
+        <button id="btn-flip">Flip view</button>
+      </div>
+      <ol id="moves"></ol>
+    </div>
+
+    <!-- Promotion picker: hidden until a pawn reaches the last rank -->
+    <div id="promotion" class="hidden">
+      <p>Your pawn awakens as...</p>
+      <div class="buttons">
+        <button data-piece="q">Queen</button>
+        <button data-piece="r">Rook</button>
+        <button data-piece="b">Bishop</button>
+        <button data-piece="n">Knight</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

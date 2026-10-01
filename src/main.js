@@ -1,0 +1,404 @@
+// main.js
+// The entry point. It sets up the 3D scene, keeps the 3D pieces in sync
+// with the chess.js game, handles clicks, and runs the animation loop.
+//
+// Golden rule: chess.js decides what is legal. The 3D scene only *shows*
+// what chess.js says. We never write chess rules ourselves.
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Chess } from 'chess.js';
+
+import { createBoard, squareToPosition, positionToSquare } from './board.js';
+import { createPiece } from './pieces.js';
+import { SmashEffects } from './smash.js';
+import { tween, updateTweens, easeInOut } from './tween.js';
+import { playMoveSound, playSmashSound, unlockAudio } from './sound.js';
+import { updateHud, askPromotion } from './ui.js';
+
+// ---------------------------------------------------------------------------
+// 1. Renderer, scene, camera
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0b14);
+scene.fog = new THREE.Fog(0x0d0b14, 18, 40);
+
+// Top-down view, tilted a little so the pieces look 3D.
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 14, 6.5);
+
+// OrbitControls lets the player drag to rotate and scroll to zoom.
+// We limit the angles so the view always stays "mostly from above".
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 8;
+controls.maxDistance = 22;
+controls.minPolarAngle = 0.1;
+controls.maxPolarAngle = 1.05;
+
+// ---------------------------------------------------------------------------
+// 2. Lights: cold moonlight from above plus two warm flickering torches
+// ---------------------------------------------------------------------------
+scene.add(new THREE.HemisphereLight(0x8a9cc8, 0x1a1410, 0.6));
+
+const moon = new THREE.DirectionalLight(0xc8d6ff, 1.8);
+moon.position.set(5, 14, 4);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+Object.assign(moon.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 40 });
+moon.shadow.bias = -0.0005;
+scene.add(moon);
+
+const torches = [new THREE.Vector3(-6.5, 3, -5), new THREE.Vector3(6.5, 3, -5)].map((p) => {
+  const light = new THREE.PointLight(0xff9a4a, 40, 20, 2);
+  light.position.copy(p);
+  scene.add(light);
+  return light;
+});
+
+// Slowly drifting magic sparks for atmosphere.
+const motes = (() => {
+  const n = 200;
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 24;
+    pos[i * 3 + 1] = Math.random() * 8;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 24;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const points = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({ color: 0xffd98a, size: 0.05, transparent: true, opacity: 0.6 })
+  );
+  scene.add(points);
+  return points;
+})();
+
+scene.add(createBoard());
+
+// ---------------------------------------------------------------------------
+// 3. Game state
+// ---------------------------------------------------------------------------
+const chess = new Chess();
+const smash = new SmashEffects(scene);
+
+// pieceAt maps a square like "e2" to the 3D piece standing on it.
+const pieceAt = new Map();
+
+let selected = null; // the square the player has picked, e.g. "e2"
+let busy = false; // true while a move is animating (ignore clicks)
+
+// Removes all 3D pieces and rebuilds them from chess.js.
+// Used for "New game" and "Undo".
+function rebuildPieces() {
+  for (const piece of pieceAt.values()) piece.removeFromParent();
+  pieceAt.clear();
+  for (const row of chess.board()) {
+    for (const cell of row) {
+      if (!cell) continue;
+      const piece = createPiece(cell.type, cell.color);
+      piece.position.copy(squareToPosition(cell.square));
+      scene.add(piece);
+      pieceAt.set(cell.square, piece);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Highlights: selected square, legal move markers, last move, check
+// ---------------------------------------------------------------------------
+const highlightGroup = new THREE.Group();
+scene.add(highlightGroup);
+
+const tileGeo = new THREE.PlaneGeometry(0.96, 0.96).rotateX(-Math.PI / 2);
+const dotGeo = new THREE.CircleGeometry(0.13, 24).rotateX(-Math.PI / 2);
+const ringGeo = new THREE.RingGeometry(0.36, 0.46, 32).rotateX(-Math.PI / 2);
+
+const glow = (color, opacity) =>
+  new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
+const mats = {
+  selected: glow(0x7fd4ff, 0.45),
+  lastMove: glow(0xe8c77a, 0.25),
+  check: glow(0xff3b2f, 0.55),
+  move: glow(0x9fe8ff, 0.8),
+  capture: glow(0xff5a4a, 0.85),
+};
+
+function addMarker(geo, mat, square, y = 0.01) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(squareToPosition(square)).setY(y);
+  highlightGroup.add(m);
+}
+
+function refreshHighlights() {
+  highlightGroup.clear();
+
+  const history = chess.history({ verbose: true });
+  const last = history[history.length - 1];
+  if (last) {
+    addMarker(tileGeo, mats.lastMove, last.from);
+    addMarker(tileGeo, mats.lastMove, last.to);
+  }
+
+  if (chess.inCheck()) {
+    const king = chess.findPiece({ type: 'k', color: chess.turn() })[0];
+    if (king) addMarker(tileGeo, mats.check, king, 0.012);
+  }
+
+  if (selected) {
+    addMarker(tileGeo, mats.selected, selected, 0.014);
+    for (const move of chess.moves({ square: selected, verbose: true })) {
+      const isCapture = move.flags.includes('c') || move.flags.includes('e');
+      addMarker(isCapture ? ringGeo : dotGeo, isCapture ? mats.capture : mats.move, move.to, 0.016);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Clicking: select a piece, then click a highlighted square to move
+// ---------------------------------------------------------------------------
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+// Works out which square the mouse is over. Pieces are checked first,
+// because a tall piece can visually cover the square behind it.
+function squareUnderPointer(event) {
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+
+  const hits = raycaster.intersectObjects([...pieceAt.values()], true);
+  if (hits.length) {
+    let obj = hits[0].object;
+    while (obj && !obj.userData.isPiece) obj = obj.parent;
+    for (const [square, piece] of pieceAt) if (piece === obj) return square;
+  }
+
+  const point = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(boardPlane, point)) return positionToSquare(point.x, point.z);
+  return null;
+}
+
+async function onSquareClicked(square) {
+  if (busy || chess.isGameOver()) return;
+
+  const piece = chess.get(square);
+
+  // Clicking one of your own pieces selects it (or switches selection).
+  if (piece && piece.color === chess.turn()) {
+    selected = selected === square ? null : square;
+    refreshHighlights();
+    return;
+  }
+
+  // Otherwise, if something is selected, try to move there.
+  if (selected) {
+    const candidates = chess.moves({ square: selected, verbose: true }).filter((m) => m.to === square);
+    if (candidates.length) {
+      let promotion;
+      if (candidates.some((m) => m.promotion)) promotion = await askPromotion();
+      await tryMove({ from: selected, to: square, promotion });
+      return;
+    }
+  }
+
+  selected = null;
+  refreshHighlights();
+}
+
+// Distinguish a click from a drag (dragging rotates the camera).
+let downAt = null;
+canvas.addEventListener('pointerdown', (e) => {
+  downAt = { x: e.clientX, y: e.clientY };
+  unlockAudio();
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (!downAt) return;
+  const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  downAt = null;
+  if (moved > 6) return; // it was a drag
+  const square = squareUnderPointer(e);
+  if (square) onSquareClicked(square);
+});
+
+// ---------------------------------------------------------------------------
+// 6. Making a move: ask chess.js, then animate what it tells us
+// ---------------------------------------------------------------------------
+async function tryMove({ from, to, promotion }) {
+  if (busy) return false; // wait for the previous move to finish animating
+  let move;
+  try {
+    move = chess.move({ from, to, promotion }); // throws if illegal
+  } catch {
+    return false;
+  }
+
+  busy = true;
+  selected = null;
+  highlightGroup.clear();
+
+  const mover = pieceAt.get(from);
+  pieceAt.delete(from);
+
+  // Which piece gets smashed? Usually the one on the target square,
+  // but en passant captures a pawn that sits *beside* the target.
+  let victimSquare = null;
+  if (move.flags.includes('e')) victimSquare = to[0] + from[1];
+  else if (move.flags.includes('c')) victimSquare = to;
+  const victim = victimSquare ? pieceAt.get(victimSquare) : null;
+  if (victimSquare) pieceAt.delete(victimSquare);
+
+  const animations = [animatePieceMove(mover, from, to, victim)];
+
+  // Castling also moves the rook.
+  if (move.flags.includes('k') || move.flags.includes('q')) {
+    const rank = from[1];
+    const [rookFrom, rookTo] = move.flags.includes('k') ? ['h' + rank, 'f' + rank] : ['a' + rank, 'd' + rank];
+    const rook = pieceAt.get(rookFrom);
+    pieceAt.delete(rookFrom);
+    pieceAt.set(rookTo, rook);
+    animations.push(animatePieceMove(rook, rookFrom, rookTo, null));
+  }
+
+  await Promise.all(animations);
+
+  // Promotion: swap the pawn for the new piece with a little flash of magic.
+  if (move.promotion) {
+    mover.removeFromParent();
+    const promoted = createPiece(move.promotion, move.color);
+    promoted.position.copy(squareToPosition(to));
+    scene.add(promoted);
+    pieceAt.set(to, promoted);
+    await tween(0.35, (t) => promoted.scale.setScalar(0.3 + 0.7 * easeInOut(t)));
+  } else {
+    pieceAt.set(to, mover);
+  }
+
+  busy = false;
+  refreshHighlights();
+  updateHud(chess);
+  return true;
+}
+
+// Moves a piece in an arc. If there is a victim, the attacker leaps higher
+// and slams down, and the victim shatters at the moment of impact.
+async function animatePieceMove(piece, from, to, victim) {
+  const start = squareToPosition(from);
+  const end = squareToPosition(to);
+  const height = victim ? 1.4 : 0.35;
+  const duration = victim ? 0.6 : 0.4;
+  let smashed = false;
+
+  await tween(duration, (t) => {
+    const e = easeInOut(t);
+    piece.position.lerpVectors(start, end, e);
+    piece.position.y = Math.sin(Math.PI * t) * height;
+
+    if (victim && !smashed && t > 0.78) {
+      smashed = true;
+      smash.shatter(victim);
+      playSmashSound();
+      shake = 0.25;
+    }
+  });
+
+  if (!victim) playMoveSound();
+}
+
+// ---------------------------------------------------------------------------
+// 7. Buttons
+// ---------------------------------------------------------------------------
+document.getElementById('btn-new').addEventListener('click', () => {
+  if (busy) return;
+  chess.reset();
+  selected = null;
+  rebuildPieces();
+  refreshHighlights();
+  updateHud(chess);
+});
+
+document.getElementById('btn-undo').addEventListener('click', () => {
+  if (busy) return;
+  chess.undo();
+  selected = null;
+  rebuildPieces();
+  refreshHighlights();
+  updateHud(chess);
+});
+
+// Swing the camera to the other side of the board.
+let viewSide = 1;
+document.getElementById('btn-flip').addEventListener('click', () => {
+  viewSide *= -1;
+  const startAngle = Math.atan2(camera.position.x, camera.position.z);
+  const targetAngle = viewSide === 1 ? 0 : Math.PI;
+  let delta = targetAngle - startAngle;
+  delta = Math.atan2(Math.sin(delta), Math.cos(delta)); // shortest way round
+  const radius = Math.hypot(camera.position.x, camera.position.z);
+  const y = camera.position.y;
+  tween(0.8, (t) => {
+    const a = startAngle + delta * easeInOut(t);
+    camera.position.set(Math.sin(a) * radius, y, Math.cos(a) * radius);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Main loop
+// ---------------------------------------------------------------------------
+let shake = 0; // camera shake strength, set when something smashes
+const shakeOffset = new THREE.Vector3();
+const timer = new THREE.Timer();
+
+function frame(timestamp) {
+  timer.update(timestamp);
+  const dt = Math.min(timer.getDelta(), 0.05); // avoid huge jumps after tab switch
+  const time = timer.getElapsed();
+
+  // Undo last frame's shake before the controls update the camera.
+  camera.position.sub(shakeOffset);
+
+  updateTweens(dt);
+  smash.update(dt);
+  controls.update();
+
+  // Torches flicker, sparks drift.
+  torches.forEach((light, i) => {
+    light.intensity = 40 + Math.sin(time * 9 + i * 2) * 4 + Math.sin(time * 23 + i) * 3;
+  });
+  motes.rotation.y = time * 0.02;
+
+  // Apply camera shake that fades quickly.
+  shakeOffset.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  camera.position.add(shakeOffset);
+  shake *= 0.88;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+rebuildPieces();
+refreshHighlights();
+updateHud(chess);
+frame();
+
+// Handy for testing in the browser console during development:
+//   enchanted.tryMove({ from: 'e2', to: 'e4' })
+if (import.meta.env.DEV) window.enchanted = { chess, tryMove, camera, isBusy: () => busy };
