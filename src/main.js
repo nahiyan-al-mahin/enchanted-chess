@@ -439,6 +439,11 @@ document.getElementById('btn-flip').addEventListener('click', () => setViewSide(
 // 8. Online play: the title screen, and reacting to what the server says
 // ---------------------------------------------------------------------------
 const SIDE_NAMES = { w: 'Ivory', b: 'Obsidian' };
+// The "can't reach the server" message. The npm hint only makes sense
+// while developing; players on the real site just see that we're retrying.
+const UNREACHABLE = import.meta.env.DEV
+  ? "Can't reach the game server. Is it running? (npm run server)"
+  : "Can't reach the game server. Trying again...";
 const otherSide = (color) => (color === 'w' ? 'b' : 'w');
 
 // Messages from the server are handled strictly one after another: if the
@@ -600,7 +605,7 @@ function renderOnline() {
   const status =
     {
       connecting: 'Connecting to the game server...',
-      unreachable: "Can't reach the game server. Is it running? (npm run server)",
+      unreachable: UNREACHABLE,
       lost: 'Connection lost. Reconnecting...',
     }[net.connection] ?? onlineStatus();
   showOnlinePanel({ players, status, notice: net.notice });
@@ -817,7 +822,7 @@ async function startOnline() {
     onStatus(status) {
       net.connection = status;
       if (status !== 'connected') net.waiting = false;
-      if (introScreen()) introError(status === 'unreachable' ? "Can't reach the game server. Is it running? (npm run server)" : '');
+      if (introScreen()) introError(status === 'unreachable' ? UNREACHABLE : '');
       renderOnline();
     },
 

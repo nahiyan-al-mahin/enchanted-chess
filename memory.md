@@ -78,6 +78,14 @@ sounds and music are original (no film names, characters or assets).
   saved session is always sent back into its game, even from the main page.
   Moves are refused unless it's your turn and the opponent is online.
   Rooms live in memory only: restarting the server ends all games.
+- Production: `npm run build` then `npm start` (= node server/index.js).
+  Express serves dist/ (index.html no-cache; fingerprinted assets cached
+  1 year) + Socket.IO + /health on process.env.PORT (default 3050). If
+  dist/ is missing, '/' explains to run the build. Client connects with
+  io() (same origin, nothing hard-coded). package.json engines node >=20.
+  Render settings: Build `npm install --include=dev && npm run build`
+  (vite is a devDependency), Start `npm start`. Free tier sleeps when
+  idle and games live in memory, so a spin-down ends games in progress.
 - Tests: `npm run test:server` (server/test-online.js, needs server + dev).
   It waits out the real grace period once and a 5-"minute" clock, so run
   the server with GRACE_SECONDS=4 MINUTE_MS=1000 for a fast run (~20 s).
@@ -93,7 +101,8 @@ sounds and music are original (no film names, characters or assets).
    rematch, clocks, labels facing each player (DONE 2026-10-02, pending the
    user's own testing)
 4. More magic: better sculpts, idle/attack animations, original music, settings
-5. Deploy server + client
+5. Deploy server + client (PREPARED 2026-10-02 for Render free web
+   service; not yet deployed)
 
 ## Progress log
 - 2026-10-01: Milestone 1 done. Tested in headless Chromium: click-to-move,
@@ -150,3 +159,8 @@ sounds and music are original (no film names, characters or assets).
   test after each (47 -> 58 -> 65 -> 75 -> 85 checks, all pass). Bug caught
   by the tests: clock resume wasn't broadcast after a reconnect (fixed).
   Server code changed: the user must restart `npm run server`.
+- 2026-10-02: Milestone 3 committed (c3a6dde). Prepared Render deployment
+  (see Code notes). Verified like production on PORT=3070 (the user's dev
+  servers held 3050): headers, socket handshake, no localhost in the
+  bundle, and two headless tabs playing Fool's mate by clicking the 3D
+  board (camera projection maths; dev shortcuts are absent in production).

@@ -2,8 +2,9 @@
 // The game server. It is the referee: every player's browser connects to
 // it, and it keeps the one true copy of each game.
 //
-//  - Express is a small web server. Right now it only answers /health;
-//    later (milestone 5) it will also serve the built game files.
+//  - Express is a small web server. It serves the built game (the dist
+//    folder made by `npm run build`) and answers /health. So in production
+//    ONE app does everything: the page, its files, and the live game.
 //  - Socket.IO keeps a live two-way connection open to each browser, so
 //    the server can push moves to players the instant they happen.
 //  - chess.js runs here too. The server never trusts a browser: every move
@@ -50,11 +51,14 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { randomInt } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { Server } from 'socket.io';
 import { Chess } from 'chess.js';
 
-// The port can be changed with the PORT environment variable
-// (e.g. `PORT=4000 npm run server`); otherwise it's 3050.
+// The port comes from the PORT environment variable. Hosting services such
+// as Render set it for us; on your own computer it's 3050.
 const PORT = process.env.PORT || 3050;
 const GRACE_SECONDS = Number(process.env.GRACE_SECONDS) || 60; // time to come back after a disconnect
 // How many milliseconds one "minute" on the chess clocks lasts. Always a real
@@ -64,6 +68,33 @@ const EMPTY_ROOM_LIFETIME = 2 * 60 * 60 * 1000; // forget rooms nobody has visit
 
 const app = express();
 app.get('/health', (req, res) => res.json({ ok: true, rooms: rooms.size }));
+
+// The built game: index.html plus the bundled JavaScript and CSS in
+// dist/assets. Vite gives those bundles names containing a fingerprint of
+// their contents (e.g. index-Dhu8vYyx.js), so browsers may keep them for
+// a year; index.html itself is always re-checked, so players get updates.
+const DIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+if (existsSync(join(DIST, 'index.html'))) {
+  app.use(
+    express.static(DIST, {
+      setHeaders(res, path) {
+        if (path.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+        else res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      },
+    })
+  );
+} else {
+  // Started without building first: say what to do instead of a blank error.
+  app.get('/', (req, res) =>
+    res
+      .status(503)
+      .type('text')
+      .send(
+        'The game has not been built yet. Run `npm run build`, then restart the server.\n' +
+          '(While developing, use `npm run dev` and open http://localhost:5173 instead.)'
+      )
+  );
+}
 
 const httpServer = createServer(app);
 const io = new Server(httpServer);
@@ -618,4 +649,5 @@ httpServer.on('error', (err) => {
 
 httpServer.listen(PORT, () => {
   console.log(`Enchanted Chess server listening on http://localhost:${PORT}`);
+  if (!existsSync(join(DIST, 'index.html'))) console.log('(No built game in dist/ yet: run `npm run build` to serve it from here.)');
 });

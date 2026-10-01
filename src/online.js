@@ -5,8 +5,9 @@
 //
 // How it fits together:
 //  1. connectOnline() opens a live Socket.IO connection as soon as the page
-//     loads. In development the address is the same as the page
-//     (localhost:5173) and Vite's proxy passes it on to the real server.
+//     loads, always to the SAME address the page came from (nothing is
+//     hard-coded). In production that's the game server itself; while
+//     developing it's Vite, whose proxy passes it on to the game server.
 //  2. The intro screen then calls createRoom() and/or joinRoom(). These
 //     send a request and wait for the server's reply (an "acknowledgement").
 //  3. Once in a room, the server pushes 'move' and 'presence' messages.
@@ -120,7 +121,7 @@ export async function resync() {
 // handlers: { onStatus, onJoined, onMove, onRejected, onPresence, onGameOver, onOffer, onTakeback, onRematch, onRematchStarted, onClock, onReplaced }
 export function connectOnline(h) {
   handlers = h;
-  socket = io(); // same address as the page; the proxy forwards it
+  socket = io(); // no address given = the address this page was loaded from
   handlers.onStatus('connecting');
 
   socket.on('connect', () => {

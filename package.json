@@ -7,7 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
-    "test:server": "node server/test-online.js"
+    "test:server": "node server/test-online.js",
+    "start": "node server/index.js"
   },
   "dependencies": {
     "chess.js": "^1.4.0",
@@ -20,5 +21,8 @@
     "vite": "^8.3.2"
   },
   "type": "module",
-  "private": true
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
 }
