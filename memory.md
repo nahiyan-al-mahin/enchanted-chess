@@ -60,7 +60,7 @@ sounds and music are original (no film names, characters or assets).
   Camera raised/steeper, capture leap scales with victim height, smash makes
   more chunks for taller pieces, clicks on a blocking enemy statue fall
   through to a legal square behind it. Checked with headless Chrome
-  screenshots (no console errors, capture smash works). Not yet committed.
+  screenshots (no console errors, capture smash works).
 - 2026-10-01: "At the table" camera: 45 degrees down (OrbitControls polar
   limits 40-50 deg), distance 13.5 (zoom 10-30), backs off automatically on
   narrow screens so the board stays in view. Flip view unchanged and works.
@@ -69,7 +69,7 @@ sounds and music are original (no film names, characters or assets).
   generated with Web Audio and sharing sound.js's AudioContext. Starts on
   first click; HUD "Music: on/off" button saved in localStorage
   ("enchanted-chess-music"). Verified in headless Chrome: no errors,
-  toggle and saved choice work. Not yet committed.
+  toggle and saved choice work.
 - 2026-10-01: Milestone 2, step 1 of 4 done (server). Added Express 5 +
   Socket.IO 4.8 (+ socket.io-client). server/index.js on port 3050 (PORT env overrides) keeps
   one chess.js game per room; events: join -> state, move -> move (to
@@ -82,4 +82,4 @@ sounds and music are original (no film names, characters or assets).
   mate result, ?local): 26/26 pass, no console errors. Known for milestone
   3: board labels read upside-down from Obsidian's side; no rematch yet
   (New game online = new room); games lost if the server restarts.
-  Nothing committed since milestone 1.
+  Committed on branch milestone-2-online (1fe7f75), not yet merged to main.
