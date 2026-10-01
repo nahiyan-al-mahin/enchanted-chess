@@ -170,3 +170,11 @@ sounds and music are original (no film names, characters or assets).
 - 2026-10-02: Deployment prep committed (6763db2). main fast-forwarded to
   it; all branches pushed to GitHub (user signed in via Git Credential
   Manager). Next: create the Render web service from main.
+- 2026-10-02 (end of session): All work committed; main = origin/main on
+  GitHub. Milestones 1-3 done; milestone 5 (deploy) prepared but the Render
+  service is not created yet. Milestone 4 (more magic) not started.
+  Next session: walk the user through creating the Render web service
+  (Build: npm install --include=dev && npm run build, Start: npm start),
+  then test the live URL in two browsers. Reminder: restart `npm run
+  server` after any server code change; my test servers used ports 3060,
+  3070 and 5180 (never 3050/5173, which are the user's).
