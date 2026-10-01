@@ -44,6 +44,20 @@ export function updateHud(chess) {
   el.moves.scrollTop = el.moves.scrollHeight;
 }
 
+// Fills in the online panel. `lines` is { seat, status, notice }.
+const online = {
+  box: document.getElementById('online'),
+  seat: document.getElementById('online-seat'),
+  status: document.getElementById('online-status'),
+  notice: document.getElementById('online-notice'),
+};
+export function showOnlinePanel({ seat, status, notice }) {
+  online.box.classList.remove('hidden');
+  online.seat.textContent = seat;
+  online.status.textContent = status;
+  online.notice.textContent = notice;
+}
+
 // Shows the promotion picker and resolves with 'q', 'r', 'b' or 'n'.
 export function askPromotion() {
   return new Promise((resolve) => {

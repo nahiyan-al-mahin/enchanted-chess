@@ -45,6 +45,37 @@ body {
   color: #ff8a7a;
 }
 
+/* Online play panel */
+#online {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+
+#online-seat {
+  color: #e8c77a;
+}
+
+#online-status {
+  margin: 2px 0;
+}
+
+#online-notice {
+  min-height: 0;
+  color: #ff8a7a;
+}
+
+#btn-invite {
+  margin-top: 6px;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .buttons {
   display: flex;
   flex-wrap: wrap;

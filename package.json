@@ -5,10 +5,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "node server/index.js",
+    "test:server": "node server/test-online.js"
   },
   "dependencies": {
     "chess.js": "^1.4.0",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
     "three": "^0.186.1"
   },
   "devDependencies": {

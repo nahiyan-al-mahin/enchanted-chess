@@ -30,14 +30,16 @@ export class SmashEffects {
   shatter(piece) {
     const box = new THREE.Box3().setFromObject(piece);
     const center = box.getCenter(new THREE.Vector3());
+    const height = box.max.y - box.min.y;
 
     // Copy the stone material so we can fade just these chunks out.
     const material = piece.children[0].material.clone();
     material.transparent = true;
 
-    const count = 34;
+    // Taller statues break into more (and bigger) chunks.
+    const count = Math.round(24 + height * 14);
     for (let i = 0; i < count; i++) {
-      const size = 0.05 + Math.random() * 0.1;
+      const size = 0.06 + Math.random() * 0.12;
       const mesh = new THREE.Mesh(chunkGeometries[i % chunkGeometries.length], material);
       mesh.scale.setScalar(size);
       mesh.castShadow = true;
@@ -66,20 +68,20 @@ export class SmashEffects {
       this.scene.add(mesh);
     }
 
-    this.addDust(center);
+    this.addDust(center, height);
 
     // Remove the original piece. Geometry is shared (cached), so we don't dispose it.
     piece.removeFromParent();
   }
 
   // A soft grey cloud of points that grows and fades.
-  addDust(center) {
-    const n = 70;
+  addDust(center, height) {
+    const n = 90;
     const positions = new Float32Array(n * 3);
     const velocities = [];
     for (let i = 0; i < n; i++) {
       positions[i * 3] = center.x;
-      positions[i * 3 + 1] = 0.2 + Math.random() * 0.5;
+      positions[i * 3 + 1] = 0.2 + Math.random() * height * 0.4;
       positions[i * 3 + 2] = center.z;
       const a = Math.random() * Math.PI * 2;
       const s = 0.5 + Math.random() * 1.5;

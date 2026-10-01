@@ -7,7 +7,8 @@
 
 let ctx = null;
 
-function audio() {
+// Exported so music.js can share the same AudioContext.
+export function audio() {
   if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
   if (ctx.state === 'suspended') ctx.resume();
   return ctx;

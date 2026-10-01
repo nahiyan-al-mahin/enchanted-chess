@@ -4,6 +4,11 @@
 //
 // Golden rule: chess.js decides what is legal. The 3D scene only *shows*
 // what chess.js says. We never write chess rules ourselves.
+//
+// Online (the normal mode): a click only *asks* the server for a move.
+// The board changes when the server announces the move to both players.
+// Local (add ?local to the address): both sides play on this screen, as in
+// milestone 1, with Undo available.
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -14,7 +19,9 @@ import { createPiece } from './pieces.js';
 import { SmashEffects } from './smash.js';
 import { tween, updateTweens, easeInOut } from './tween.js';
 import { playMoveSound, playSmashSound, unlockAudio } from './sound.js';
-import { updateHud, askPromotion } from './ui.js';
+import { updateHud, askPromotion, showOnlinePanel } from './ui.js';
+import { initMusic } from './music.js';
+import { connectOnline, sendMove, inviteLink, resync } from './online.js';
 
 // ---------------------------------------------------------------------------
 // 1. Renderer, scene, camera
@@ -29,21 +36,34 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d0b14);
-scene.fog = new THREE.Fog(0x0d0b14, 18, 40);
+scene.fog = new THREE.Fog(0x0d0b14, 26, 55);
 
-// Top-down view, tilted a little so the pieces look 3D.
+// "Sitting at the table" view: the camera looks down at about 45 degrees,
+// so we see the statues partly from the side while the whole board fits.
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 14, 6.5);
+const TARGET = new THREE.Vector3(0, 0.6, 0); // aim at the statues' middle, not the board surface
+const LOOK_DOWN = THREE.MathUtils.degToRad(45); // angle below the horizon
+const START_DISTANCE = 13.5;
 
 // OrbitControls lets the player drag to rotate and scroll to zoom.
-// We limit the angles so the view always stays "mostly from above".
+// Its "polar angle" is measured from straight overhead, so looking 40-50
+// degrees down means a polar angle of 40-50 degrees too (90 - 50 = 40).
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.enablePan = false;
-controls.minDistance = 8;
-controls.maxDistance = 22;
-controls.minPolarAngle = 0.1;
-controls.maxPolarAngle = 1.05;
+controls.target.copy(TARGET);
+controls.minDistance = 10;
+controls.maxDistance = 30;
+controls.minPolarAngle = THREE.MathUtils.degToRad(40); // steepest: 50 degrees down
+controls.maxPolarAngle = THREE.MathUtils.degToRad(50); // flattest: 40 degrees down
+
+// On narrow screens (like a phone held upright) the board is wider than
+// the view, so the camera needs to back off to keep the whole board visible.
+function distanceToFitBoard() {
+  const halfWidth = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
+  return Math.max(START_DISTANCE, 6.2 / Math.tan(halfWidth));
+}
+camera.position.set(0, Math.sin(LOOK_DOWN), Math.cos(LOOK_DOWN)).multiplyScalar(distanceToFitBoard()).add(TARGET);
 
 // ---------------------------------------------------------------------------
 // 2. Lights: cold moonlight from above plus two warm flickering torches
@@ -54,11 +74,11 @@ const moon = new THREE.DirectionalLight(0xc8d6ff, 1.8);
 moon.position.set(5, 14, 4);
 moon.castShadow = true;
 moon.shadow.mapSize.set(2048, 2048);
-Object.assign(moon.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 1, far: 40 });
+Object.assign(moon.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 1, far: 50 });
 moon.shadow.bias = -0.0005;
 scene.add(moon);
 
-const torches = [new THREE.Vector3(-6.5, 3, -5), new THREE.Vector3(6.5, 3, -5)].map((p) => {
+const torches = [new THREE.Vector3(-6.5, 5, -5), new THREE.Vector3(6.5, 5, -5)].map((p) => {
   const light = new THREE.PointLight(0xff9a4a, 40, 20, 2);
   light.position.copy(p);
   scene.add(light);
@@ -97,6 +117,25 @@ const pieceAt = new Map();
 
 let selected = null; // the square the player has picked, e.g. "e2"
 let busy = false; // true while a move is animating (ignore clicks)
+
+const isLocal = new URLSearchParams(location.search).has('local');
+
+// Everything we know about the online game (unused in local mode).
+const net = {
+  connection: 'connecting', // 'connecting' | 'connected' | 'lost' | 'unreachable' | 'error'
+  joined: false, // has the server given us a seat yet?
+  color: null, // 'w', 'b', or null for a spectator
+  presence: null, // { w, b, spectators } from the server
+  waiting: false, // true after we've asked for a move, until the server answers
+  notice: '', // a short message such as "It's not your turn."
+};
+
+// Can the person at this screen move right now?
+function canIMove() {
+  if (isLocal) return true;
+  const opponent = net.presence?.[net.color === 'w' ? 'b' : 'w'];
+  return net.connection === 'connected' && net.color === chess.turn() && opponent === 'online' && !net.waiting;
+}
 
 // Removes all 3D pieces and rebuilds them from chess.js.
 // Used for "New game" and "Undo".
@@ -179,20 +218,30 @@ function squareUnderPointer(event) {
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
 
+  let pieceSquare = null;
   const hits = raycaster.intersectObjects([...pieceAt.values()], true);
   if (hits.length) {
     let obj = hits[0].object;
     while (obj && !obj.userData.isPiece) obj = obj.parent;
-    for (const [square, piece] of pieceAt) if (piece === obj) return square;
+    for (const [square, piece] of pieceAt) if (piece === obj) pieceSquare = square;
   }
 
+  let boardSquare = null;
   const point = new THREE.Vector3();
-  if (raycaster.ray.intersectPlane(boardPlane, point)) return positionToSquare(point.x, point.z);
-  return null;
+  if (raycaster.ray.intersectPlane(boardPlane, point)) boardSquare = positionToSquare(point.x, point.z);
+
+  // Tall statues can stand in front of a square you want to move to.
+  // If you clicked an enemy statue you can't capture, but the board point
+  // behind it is a legal move, the board square wins.
+  if (pieceSquare && selected && chess.get(pieceSquare).color !== chess.turn()) {
+    const targets = chess.moves({ square: selected, verbose: true }).map((m) => m.to);
+    if (!targets.includes(pieceSquare) && targets.includes(boardSquare)) return boardSquare;
+  }
+  return pieceSquare ?? boardSquare;
 }
 
 async function onSquareClicked(square) {
-  if (busy || chess.isGameOver()) return;
+  if (busy || chess.isGameOver() || !canIMove()) return;
 
   const piece = chess.get(square);
 
@@ -209,7 +258,9 @@ async function onSquareClicked(square) {
     if (candidates.length) {
       let promotion;
       if (candidates.some((m) => m.promotion)) promotion = await askPromotion();
-      await tryMove({ from: selected, to: square, promotion });
+      const move = { from: selected, to: square, promotion };
+      if (isLocal) await tryMove(move);
+      else requestMove(move); // online: ask the server; it will tell us when to play it
       return;
     }
   }
@@ -292,13 +343,15 @@ async function tryMove({ from, to, promotion }) {
   return true;
 }
 
-// Moves a piece in an arc. If there is a victim, the attacker leaps higher
-// and slams down, and the victim shatters at the moment of impact.
+// Moves a piece in an arc. If there is a victim, the attacker leaps up
+// (higher for taller victims) and slams down onto it, and the victim
+// shatters at the moment of impact.
 async function animatePieceMove(piece, from, to, victim) {
   const start = squareToPosition(from);
   const end = squareToPosition(to);
-  const height = victim ? 1.4 : 0.35;
-  const duration = victim ? 0.6 : 0.4;
+  const victimTop = victim ? new THREE.Box3().setFromObject(victim).max.y : 0;
+  const height = victim ? Math.max(1.4, victimTop * 0.75 + 0.5) : 0.4;
+  const duration = victim ? 0.7 : 0.4;
   let smashed = false;
 
   await tween(duration, (t) => {
@@ -322,6 +375,13 @@ async function animatePieceMove(piece, from, to, victim) {
 // ---------------------------------------------------------------------------
 document.getElementById('btn-new').addEventListener('click', () => {
   if (busy) return;
+  if (!isLocal) {
+    // Online, a new game means a new room (and a new invite link).
+    if (confirm('Start a new game in a new room? You will get a new invite link to send.')) {
+      location.href = location.pathname;
+    }
+    return;
+  }
   chess.reset();
   selected = null;
   rebuildPieces();
@@ -338,24 +398,166 @@ document.getElementById('btn-undo').addEventListener('click', () => {
   updateHud(chess);
 });
 
-// Swing the camera to the other side of the board.
+// Puts the camera on Ivory's side (1) or Obsidian's side (-1), either
+// swinging round smoothly or jumping straight there.
 let viewSide = 1;
-document.getElementById('btn-flip').addEventListener('click', () => {
-  viewSide *= -1;
+function setViewSide(side, animate = true) {
+  viewSide = side;
   const startAngle = Math.atan2(camera.position.x, camera.position.z);
   const targetAngle = viewSide === 1 ? 0 : Math.PI;
   let delta = targetAngle - startAngle;
   delta = Math.atan2(Math.sin(delta), Math.cos(delta)); // shortest way round
   const radius = Math.hypot(camera.position.x, camera.position.z);
   const y = camera.position.y;
-  tween(0.8, (t) => {
-    const a = startAngle + delta * easeInOut(t);
-    camera.position.set(Math.sin(a) * radius, y, Math.cos(a) * radius);
-  });
-});
+  const placeAt = (a) => camera.position.set(Math.sin(a) * radius, y, Math.cos(a) * radius);
+  if (!animate) return placeAt(targetAngle);
+  tween(0.8, (t) => placeAt(startAngle + delta * easeInOut(t)));
+}
+document.getElementById('btn-flip').addEventListener('click', () => setViewSide(-viewSide));
 
 // ---------------------------------------------------------------------------
-// 8. Main loop
+// 8. Online play: react to what the server tells us
+// ---------------------------------------------------------------------------
+const SIDE_NAMES = { w: 'Ivory', b: 'Obsidian' };
+
+// Messages from the server are handled strictly one after another: if the
+// opponent's move arrives while ours is still animating, it waits its turn.
+let serverQueue = Promise.resolve();
+const inOrder = (job) => (serverQueue = serverQueue.then(job).catch((err) => console.error(err)));
+
+// Ask the server to play a move. The board doesn't change yet.
+function requestMove(move) {
+  net.waiting = true;
+  selected = null;
+  refreshHighlights();
+  sendMove(move);
+  renderOnline();
+}
+
+// Sets up the board from the server's list of moves (on join and reconnect).
+function loadGame(moves) {
+  chess.reset();
+  for (const move of moves) chess.move(move);
+  selected = null;
+  rebuildPieces();
+  refreshHighlights();
+  updateHud(chess);
+  renderOnline();
+}
+
+// Shows a short message in the online panel (for a few seconds, or until
+// replaced if seconds is 0).
+let noticeTimer = null;
+function notify(text, seconds = 4) {
+  net.notice = text;
+  clearTimeout(noticeTimer);
+  if (seconds) noticeTimer = setTimeout(() => notify('', 0), seconds * 1000);
+  renderOnline();
+}
+
+// The status line: whose turn it is, who's missing, or how the game ended.
+function onlineStatus() {
+  if (chess.isGameOver()) {
+    if (!chess.isCheckmate()) return 'Game over: it is a draw.';
+    const winner = chess.turn() === 'w' ? 'b' : 'w';
+    if (!net.color) return `Game over: ${SIDE_NAMES[winner]} wins.`;
+    return winner === net.color ? 'Checkmate. You win!' : 'Checkmate. You lose.';
+  }
+  const p = net.presence;
+  if (!p) return '';
+  if (!net.color) {
+    const word = { empty: 'not here yet', online: 'connected', offline: 'disconnected' };
+    return `Ivory ${word[p.w]}, Obsidian ${word[p.b]}.`;
+  }
+  const opponent = p[net.color === 'w' ? 'b' : 'w'];
+  if (opponent === 'empty') return 'Waiting for opponent... Send them the invite link.';
+  if (opponent === 'offline') return 'Opponent disconnected. Waiting for them to come back...';
+  if (net.waiting) return 'Sending move...';
+  return chess.turn() === net.color ? 'Your turn.' : "Opponent's turn.";
+}
+
+function renderOnline() {
+  if (isLocal) return;
+  const seat = net.joined ? (net.color ? `You are ${SIDE_NAMES[net.color]}` : 'You are watching (spectator)') : '';
+  const status =
+    {
+      connecting: 'Connecting to the game server...',
+      unreachable: "Can't reach the game server. Is it running? (npm run server)",
+      lost: 'Connection lost. Reconnecting...',
+      error: 'The server would not let us join this room.',
+    }[net.connection] ?? onlineStatus();
+  showOnlinePanel({ seat, status, notice: net.notice });
+}
+
+function startOnline() {
+  const undo = document.getElementById('btn-undo');
+  undo.disabled = true;
+  undo.title = 'Undo is not available in online games';
+
+  document.getElementById('btn-invite').addEventListener('click', async (e) => {
+    const button = e.currentTarget;
+    try {
+      await navigator.clipboard.writeText(inviteLink());
+      button.textContent = 'Link copied!';
+      setTimeout(() => (button.textContent = 'Copy invite link'), 2000);
+    } catch {
+      // Clipboard not allowed: show the link so it can be copied by hand.
+      prompt('Copy this link and send it to your friend:', inviteLink());
+    }
+  });
+
+  connectOnline({
+    onStatus(status, error) {
+      net.connection = status;
+      if (status !== 'connected') net.waiting = false;
+      if (error) notify(error, 0);
+      renderOnline();
+    },
+
+    // The server gave us a seat and the game so far (also after reconnecting).
+    onJoined(reply) {
+      const firstTime = !net.joined;
+      net.joined = true;
+      net.color = reply.color;
+      net.waiting = false;
+      if (firstTime && reply.color === 'b') setViewSide(-1, false); // Obsidian sits on the far side
+      inOrder(() => loadGame(reply.moves));
+    },
+
+    // A move the server accepted: now we animate it, with the usual tryMove().
+    onMove(move) {
+      inOrder(async () => {
+        const ok = await tryMove(move);
+        net.waiting = false;
+        // Our copy should now match the server's exactly. If it somehow
+        // doesn't, ask the server for the whole game again.
+        if (!ok || chess.fen() !== move.fen) {
+          console.warn('Board out of sync with the server; reloading the game.');
+          resync();
+        }
+        renderOnline();
+      });
+    },
+
+    onRejected({ reason }) {
+      net.waiting = false;
+      notify(reason);
+    },
+
+    onPresence(presence) {
+      net.presence = presence;
+      renderOnline();
+    },
+
+    onReplaced() {
+      net.color = null;
+      notify('This game was opened in another tab, so this tab is now only watching.', 0);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 9. Main loop
 // ---------------------------------------------------------------------------
 let shake = 0; // camera shake strength, set when something smashes
 const shakeOffset = new THREE.Vector3();
@@ -392,13 +594,20 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  // If the window got too narrow for the board, back the camera off.
+  const offset = camera.position.clone().sub(controls.target);
+  const needed = distanceToFitBoard();
+  if (offset.length() < needed) camera.position.copy(controls.target).add(offset.setLength(needed));
 });
 
 rebuildPieces();
 refreshHighlights();
 updateHud(chess);
+initMusic(document.getElementById('btn-music'));
+if (!isLocal) startOnline();
 frame();
 
 // Handy for testing in the browser console during development:
 //   enchanted.tryMove({ from: 'e2', to: 'e4' })
-if (import.meta.env.DEV) window.enchanted = { chess, tryMove, camera, isBusy: () => busy };
+//   enchanted.requestMove({ from: 'e2', to: 'e4' })   (online: ask the server)
+if (import.meta.env.DEV) window.enchanted = { chess, tryMove, requestMove, net, camera, isBusy: () => busy };
