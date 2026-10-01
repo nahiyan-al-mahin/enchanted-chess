@@ -19,7 +19,7 @@ import { createPiece } from './pieces.js';
 import { SmashEffects } from './smash.js';
 import { tween, updateTweens, easeInOut } from './tween.js';
 import { playMoveSound, playSmashSound, unlockAudio } from './sound.js';
-import { updateHud, askPromotion, showOnlinePanel, askConfirm, showGameOver } from './ui.js';
+import { updateHud, askPromotion, showOnlinePanel, askConfirm, showGameOver, updateRematch, hideGameOver } from './ui.js';
 import { initMusic } from './music.js';
 import {
   connectOnline,
@@ -27,6 +27,7 @@ import {
   joinRoom,
   sendMove,
   exitGame,
+  ask,
   inviteLink,
   resync,
   roomFromUrl,
@@ -142,6 +143,9 @@ const net = {
   status: null, // the room: 'waiting' | 'active' | 'over' (decided by the server)
   result: null, // { winner, reason, names } once the game is over
   graceDeadline: { w: null, b: null }, // when a disconnected player runs out of time (local clock)
+  offer: null, // an open offer: { type: 'draw' | 'takeback', from: 'w' | 'b' }
+  rematch: { w: false, b: false }, // who has asked for a rematch
+  clock: null, // { w, b, running, at }: ms left (as of `at`, local time); null = no clock
   waiting: false, // true after we've asked for a move, until the server answers
   notice: '', // a short message such as "It's not your turn."
 };
@@ -477,6 +481,15 @@ function mmss(ms) {
   const total = Math.ceil(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
+// Time left on a player's chess clock right now (ms), counting down
+// smoothly between the server's updates.
+function clockLeft(color) {
+  const c = net.clock;
+  if (!c) return null;
+  return Math.max(0, c[color] - (c.running === color ? Date.now() - c.at : 0));
+}
+const setClock = (clock) => (net.clock = clock ? { ...clock, at: Date.now() } : null);
+
 const graceLeft = (color) => (net.graceDeadline[color] ? Math.max(0, net.graceDeadline[color] - Date.now()) : null);
 
 // How the game ended, from this player's point of view: { title, text }.
@@ -489,6 +502,11 @@ function describeResult({ winner, reason, names }) {
   const title = !winner ? 'Draw' : youWin ? 'Victory' : youLose ? 'Defeat' : `${winnerName} wins`;
   const text = {
     checkmate: youWin ? 'Checkmate. You win!' : `Checkmate. ${winnerName} wins.`,
+    resigned: youWin
+      ? `${loserName} resigned. You win!`
+      : youLose
+        ? 'You resigned.'
+        : `${loserName} resigned. ${winnerName} wins.`,
     left: youWin
       ? `${loserName} left the game. You win!`
       : youLose
@@ -499,10 +517,17 @@ function describeResult({ winner, reason, names }) {
       : youLose
         ? "You didn't come back in time, so you lost by abandonment."
         : `${loserName} didn't come back in time. ${winnerName} wins by abandonment.`,
+    agreed: 'Draw agreed.',
     stalemate: 'Stalemate. The game is a draw.',
     insufficient: 'Not enough pieces left to checkmate. The game is a draw.',
     threefold: 'The same position came up three times. The game is a draw.',
     'fifty-moves': 'Fifty moves without a capture or pawn move. The game is a draw.',
+    timeout: youWin
+      ? `${loserName} ran out of time. You win!`
+      : youLose
+        ? 'You ran out of time.'
+        : `${loserName} ran out of time. ${winnerName} wins.`,
+    'timeout-insufficient': `${names[net.result?.flagged] ?? 'A player'} ran out of time, but the other side has only a king left and can't checkmate. The game is a draw.`,
   }[reason];
   return { title, text };
 }
@@ -512,7 +537,31 @@ function showResultPanel() {
   showGameOver(title, text, {
     menu: () => leaveRoom(''),
     newGame: () => leaveRoom('?new'), // straight to "Create game room"
+    async rematch() {
+      const reply = await ask('rematch');
+      if (reply.error) updateRematch({ show: true, label: 'Rematch', disabled: true, note: reply.error });
+    },
   });
+  renderRematch();
+}
+
+// Keeps the Rematch button in step with who has asked.
+function renderRematch() {
+  if (!net.result) return;
+  const me = net.color;
+  if (!me) return updateRematch({ show: false, label: '', disabled: true, note: '' }); // spectators
+  const them = net.presence?.[otherSide(me)];
+  const name = them?.name ?? 'Your opponent';
+  if (them?.state === 'exited') {
+    return updateRematch({ show: true, label: 'Rematch', disabled: true, note: `${name} has left, so a rematch isn't possible.` });
+  }
+  if (net.rematch[me]) {
+    return updateRematch({ show: true, label: 'Rematch asked', disabled: true, note: `Waiting for ${name} to accept the rematch...` });
+  }
+  if (net.rematch[otherSide(me)]) {
+    return updateRematch({ show: true, label: 'Accept rematch', disabled: false, calling: true, note: `${name} wants a rematch! Colours will swap.` });
+  }
+  updateRematch({ show: true, label: 'Rematch', disabled: false, note: '' });
 }
 
 // The status line: whose turn it is, who's missing, or how the game ended.
@@ -544,6 +593,8 @@ function renderOnline() {
           you: c === net.color,
           state: p[c].state,
           countdown: p[c].state === 'offline' && graceLeft(c) !== null ? mmss(graceLeft(c)) : null,
+          clock: net.clock ? mmss(clockLeft(c)) : null,
+          clockState: !net.clock ? '' : clockLeft(c) < 30_000 ? 'low' : net.clock.running === c ? 'running' : '',
         }))
       : [];
   const status =
@@ -555,10 +606,10 @@ function renderOnline() {
   showOnlinePanel({ players, status, notice: net.notice });
 }
 
-// Keep the "come back" countdowns ticking on screen.
+// Keep the "come back" countdowns and the running chess clock ticking on screen.
 setInterval(() => {
-  if (graceLeft('w') !== null || graceLeft('b') !== null) renderOnline();
-}, 500);
+  if (graceLeft('w') !== null || graceLeft('b') !== null || net.clock?.running) renderOnline();
+}, 250);
 
 // The server sends how many milliseconds each disconnected player has
 // left; turn that into a deadline on this computer's clock.
@@ -578,7 +629,13 @@ function applyJoin(reply) {
   net.color = reply.color;
   net.settings = reply.settings;
   net.result = reply.result;
+  net.offer = reply.offer ?? null;
+  net.rematch = reply.rematch ?? { w: false, b: false };
+  setClock(reply.clock);
   applyPresence(reply.presence);
+  if (!net.result) hideGameOver();
+  hideOfferPrompt();
+  if (net.offer && net.color && net.offer.from !== net.color) showOfferPrompt(net.offer);
   net.waiting = false;
   inOrder(() => {
     loadGame(reply.moves);
@@ -642,11 +699,77 @@ async function onExitClicked() {
   leaveRoom('');
 }
 
+// ---- Offers (draw, takeback) ----
+const OFFER_WORDS = {
+  draw: { theyOffer: (n) => `${n} offers a draw.`, mine: 'draw offer', made: 'Draw offered.' },
+  takeback: { theyOffer: (n) => `${n} asks to take back their last move.`, mine: 'takeback request', made: 'Takeback requested.' },
+};
+const offerPrompt = document.getElementById('offer-prompt');
+const opponentName = () => net.presence?.[otherSide(net.color)]?.name ?? 'Your opponent';
+
+function hideOfferPrompt() {
+  offerPrompt.classList.add('hidden');
+}
+
+// The opponent made us an offer: show Accept / Decline.
+function showOfferPrompt(offer) {
+  offerPrompt.querySelector('.offer-text').textContent = OFFER_WORDS[offer.type].theyOffer(opponentName());
+  offerPrompt.classList.remove('hidden');
+  const answer = (accept) => async () => {
+    hideOfferPrompt();
+    const reply = await ask('answer-offer', { accept });
+    if (reply.error) notify(reply.error);
+  };
+  offerPrompt.querySelector('.offer-yes').onclick = answer(true);
+  offerPrompt.querySelector('.offer-no').onclick = answer(false);
+}
+
+// News about an offer from the server ('pending', 'accepted', 'declined', 'expired').
+function onOfferNews({ type, from, status }) {
+  const mine = from === net.color;
+  const words = OFFER_WORDS[type];
+  net.offer = status === 'pending' ? { type, from } : null;
+  if (status === 'pending') {
+    if (mine) notify(`${words.made} Waiting for ${opponentName()} to answer...`, 0);
+    else if (net.color) showOfferPrompt({ type, from });
+    else notify(`${SIDE_NAMES[from]} made a ${words.mine}.`);
+    return;
+  }
+  hideOfferPrompt();
+  if (!mine) return notify('');
+  if (status === 'declined') notify(`${opponentName()} declined your ${words.mine}.`);
+  if (status === 'expired') notify(`Your ${words.mine} lapsed because a move was played.`);
+  if (status === 'accepted') notify(`${opponentName()} accepted your ${words.mine}.`);
+}
+
+async function makeOffer(type) {
+  closeGameMenu();
+  const reply = await ask('offer', { type });
+  if (reply.error) notify(reply.error);
+}
+
+// "Resign": ask first, then ask the server. The result arrives as 'game-over'.
+async function onResignClicked() {
+  closeGameMenu();
+  if (!(await askConfirm('Resign this game?', 'Resign', 'Keep playing'))) return;
+  const reply = await ask('resign');
+  if (reply.error) notify(reply.error);
+}
+
 const menuButton = document.getElementById('btn-menu');
 const gameMenu = document.getElementById('game-menu');
 function closeGameMenu() {
   gameMenu.classList.add('hidden');
   menuButton.setAttribute('aria-expanded', 'false');
+}
+
+// Show only the menu options that make sense right now. Buttons marked
+// data-for="player-active" are for the two players during a live game.
+// (The server checks everything again; this just keeps the menu tidy.)
+function updateGameMenu() {
+  const playing = !!net.color && net.status === 'active';
+  for (const b of gameMenu.querySelectorAll('[data-for="player-active"]')) b.hidden = !playing;
+  document.getElementById('btn-exit').textContent = net.color ? 'Exit game' : 'Stop watching';
 }
 
 async function startOnline() {
@@ -656,11 +779,14 @@ async function startOnline() {
   document.getElementById('btn-undo').classList.add('hidden');
   menuButton.classList.remove('hidden');
   menuButton.addEventListener('click', () => {
+    updateGameMenu();
     const open = gameMenu.classList.toggle('hidden') === false;
     menuButton.setAttribute('aria-expanded', String(open));
-    document.getElementById('btn-exit').textContent = net.color ? 'Exit game' : 'Stop watching';
   });
   document.getElementById('btn-exit').addEventListener('click', onExitClicked);
+  document.getElementById('btn-resign').addEventListener('click', onResignClicked);
+  document.getElementById('btn-draw').addEventListener('click', () => makeOffer('draw'));
+  document.getElementById('btn-takeback').addEventListener('click', () => makeOffer('takeback'));
   document.getElementById('btn-invite').addEventListener('click', (e) => copyToClipboard(inviteLink(), e.currentTarget));
 
   // While the title screen is up, the board slowly turns behind it.
@@ -734,6 +860,7 @@ async function startOnline() {
 
     onPresence(presence) {
       applyPresence(presence);
+      renderRematch(); // e.g. the opponent just left: no rematch possible
       // Waiting in the lobby and the opponent just arrived? Let's play.
       if (introScreen() === 'lobby' && presence.status !== 'waiting') startPlaying();
       renderOnline();
@@ -741,9 +868,44 @@ async function startOnline() {
 
     // The server says the game is over. Show the panel after any move
     // that's still animating (so a checkmate is seen first).
+    onOffer: onOfferNews,
+
+    // The server's clock times: always trust these over our own countdown.
+    onClock(clock) {
+      setClock(clock);
+      renderOnline();
+    },
+
+    onRematch(asked) {
+      net.rematch = asked;
+      renderRematch();
+    },
+
+    // Both said yes: a fresh game in the same room, colours swapped. Join
+    // again to get our new colour and the empty board.
+    async onRematchStarted() {
+      const before = net.color;
+      net.result = null;
+      hideGameOver();
+      await resync();
+      if (net.color && net.color !== before) {
+        setViewSide(net.color === 'b' ? -1 : 1);
+        notify(`Rematch! Colours swapped: you are ${SIDE_NAMES[net.color]} now.`);
+      }
+    },
+
+    // A takeback was accepted: redraw the board from the server's move list
+    // (after any move that's still animating).
+    onTakeback({ moves }) {
+      net.waiting = false;
+      inOrder(() => loadGame(moves));
+    },
+
     onGameOver(result) {
       net.result = result;
       net.status = 'over';
+      net.offer = null;
+      hideOfferPrompt();
       selected = null;
       refreshHighlights();
       inOrder(() => {

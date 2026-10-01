@@ -45,7 +45,8 @@ export function updateHud(chess) {
 }
 
 // Fills in the online panel.
-//   players: [{ color: 'w'|'b', name, you, state, countdown }]
+//   players: [{ color: 'w'|'b', name, you, state, countdown, clock, clockState }]
+//     clock: e.g. '4:59' (or null with no time control); clockState: 'running' | 'low' | ''
 //     state: 'online' | 'offline' | 'exited' | 'empty'; countdown: e.g. '0:42' while offline
 //   status, notice: lines of text
 const online = {
@@ -57,7 +58,7 @@ const online = {
 export function showOnlinePanel({ players, status, notice }) {
   online.box.classList.remove('hidden');
   online.players.replaceChildren(
-    ...players.map(({ color, name, you, state, countdown }) => {
+    ...players.map(({ color, name, you, state, countdown, clock, clockState }) => {
       // Built with textContent (never innerHTML), so a name can't inject HTML.
       const li = document.createElement('li');
       const dot = document.createElement('span');
@@ -70,6 +71,7 @@ export function showOnlinePanel({ players, status, notice }) {
       if (state === 'offline') li.append(Object.assign(document.createElement('span'), { className: 'away', textContent: 'disconnected' }));
       if (state === 'exited') li.append(Object.assign(document.createElement('span'), { className: 'away', textContent: 'left' }));
       if (countdown) li.append(Object.assign(document.createElement('span'), { className: 'countdown', textContent: countdown }));
+      if (clock) li.append(Object.assign(document.createElement('span'), { className: `clock ${clockState}`, textContent: clock }));
       return li;
     })
   );
@@ -97,7 +99,7 @@ export function askConfirm(question, yesLabel, noLabel) {
   });
 }
 
-// The game over panel. actions: { menu(), newGame() }
+// The game over panel. actions: { menu(), newGame(), rematch() }
 const gameover = document.getElementById('gameover');
 export function showGameOver(title, text, actions) {
   gameover.querySelector('.gameover-title').textContent = title;
@@ -108,7 +110,23 @@ export function showGameOver(title, text, actions) {
     if (which === 'view') gameover.classList.add('peek'); // shrink so the board can be seen
     if (which === 'menu') actions.menu();
     if (which === 'new') actions.newGame();
+    if (which === 'rematch') actions.rematch();
   };
+}
+
+// The Rematch button and the line above the buttons.
+//   rematch: { show, label, disabled, calling, note }
+export function updateRematch({ show, label, disabled, calling, note }) {
+  const button = gameover.querySelector('[data-gameover="rematch"]');
+  button.hidden = !show;
+  button.textContent = label;
+  button.disabled = disabled;
+  button.classList.toggle('calling', !!calling);
+  gameover.querySelector('.gameover-rematch').textContent = note;
+}
+
+export function hideGameOver() {
+  gameover.classList.add('hidden');
 }
 
 // Shows the promotion picker and resolves with 'q', 'r', 'b' or 'n'.

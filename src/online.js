@@ -103,6 +103,9 @@ export async function exitGame() {
   return reply;
 }
 
+// Any other in-game request ('resign', ...). Reply: { ok } or { error }.
+export const ask = (event, data = {}) => request(event, data);
+
 // Asks the server to play a move. Nothing happens on the board until the
 // server answers with 'move' (accepted) or 'move-rejected'.
 export function sendMove({ from, to, promotion }) {
@@ -114,7 +117,7 @@ export async function resync() {
   if (current) handlers.onJoined(await joinRoom(current.room, current.name));
 }
 
-// handlers: { onStatus, onJoined, onMove, onRejected, onPresence, onGameOver, onReplaced }
+// handlers: { onStatus, onJoined, onMove, onRejected, onPresence, onGameOver, onOffer, onTakeback, onRematch, onRematchStarted, onClock, onReplaced }
 export function connectOnline(h) {
   handlers = h;
   socket = io(); // same address as the page; the proxy forwards it
@@ -130,5 +133,10 @@ export function connectOnline(h) {
   socket.on('move-rejected', (m) => handlers.onRejected(m));
   socket.on('presence', (p) => handlers.onPresence(p));
   socket.on('game-over', (result) => handlers.onGameOver(result));
+  socket.on('offer', (news) => handlers.onOffer(news));
+  socket.on('takeback', (game) => handlers.onTakeback(game));
+  socket.on('rematch', (asked) => handlers.onRematch(asked));
+  socket.on('rematch-started', () => handlers.onRematchStarted());
+  socket.on('clock', (clock) => handlers.onClock(clock));
   socket.on('replaced', () => handlers.onReplaced());
 }

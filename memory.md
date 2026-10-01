@@ -56,6 +56,22 @@ sounds and music are original (no film names, characters or assets).
   wins ('abandoned'). Grace also starts at game start for an absent
   creator. Finished rooms: only non-exited seat holders may rejoin to view;
   everyone else gets {ended:true} -> intro 'ended' screen.
+- In-game requests (all ack { ok } | { error }, all checked by the server):
+  resign {}; offer {type:'draw'|'takeback'}; answer-offer {accept};
+  rematch {}. One open offer at a time (room.offer); room.offerPly limits
+  each player to one offer of each kind per ply; a move lets an offer
+  expire. Takeback undoes the asker's last move (2 plies if the opponent
+  already replied) and broadcasts 'takeback' {moves, fen}. Rematch: both
+  must ask after 'over'; seats swap, fresh chess + clocks, 'rematch-started'
+  -> clients resync() and turn the camera. Not possible once a player exited.
+- Clocks: room.clock {w,b,running,since,alarm}; server-only timekeeping;
+  run only while active AND both players connected (paused during the
+  disconnect grace); 'clock' {w,b,running} broadcast on every change;
+  flag() = 'timeout' loss, or 'timeout-insufficient' draw if the winner
+  has a bare king. MINUTE_MS env shortens clock minutes for tests.
+- Game over reasons: checkmate, stalemate, insufficient, threefold,
+  fifty-moves, left, abandoned, resigned, agreed, timeout,
+  timeout-insufficient (result.flagged = who ran out).
 - Client: online HUD hides New game/Undo, shows "Game menu" (Exit game /
   Stop watching). Styled askConfirm() + game over panel (View board / Main
   menu / New game -> /?new opens Create screen) in ui.js. A tab with a
@@ -63,6 +79,8 @@ sounds and music are original (no film names, characters or assets).
   Moves are refused unless it's your turn and the opponent is online.
   Rooms live in memory only: restarting the server ends all games.
 - Tests: `npm run test:server` (server/test-online.js, needs server + dev).
+  It waits out the real grace period once and a 5-"minute" clock, so run
+  the server with GRACE_SECONDS=4 MINUTE_MS=1000 for a fast run (~20 s).
 - Dev helpers in the browser console: `enchanted.tryMove(...)` (local only),
   `enchanted.requestMove({from:'e2',to:'e4'})`, `enchanted.net`.
 - Headless-Chrome testing gotcha: only the newest window is "visible"; others
@@ -72,8 +90,8 @@ sounds and music are original (no film names, characters or assets).
 1. Local 3D board with full rules + smash effect (DONE 2026-10-01)
 2. Online play: Socket.IO server, rooms via share link, server-side validation (DONE 2026-10-02)
 3. Duel polish: intro page, draw/resign/leave/takeback menu, game over +
-   rematch, clocks, labels facing each player (IN PROGRESS: 4 steps, user
-   tests after each step)
+   rematch, clocks, labels facing each player (DONE 2026-10-02, pending the
+   user's own testing)
 4. More magic: better sculpts, idle/attack animations, original music, settings
 5. Deploy server + client
 
@@ -127,3 +145,8 @@ sounds and music are original (no film names, characters or assets).
   reconnect countdown visible to the opponent, abandonment win. Game over
   panel already covers step 3 except Rematch. test-online.js 41/41 (run
   test servers with GRACE_SECONDS small; test waits for the real grace).
+- 2026-10-02: Milestone 3 complete. Audit found resign, draw offer,
+  takeback, rematch and clocks missing; built them one at a time, server
+  test after each (47 -> 58 -> 65 -> 75 -> 85 checks, all pass). Bug caught
+  by the tests: clock resume wasn't broadcast after a reconnect (fixed).
+  Server code changed: the user must restart `npm run server`.

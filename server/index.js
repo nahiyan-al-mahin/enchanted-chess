@@ -18,6 +18,16 @@
 //                         (reply: { room, color, moves, settings, status, result, presence })
 //                         (or { error, ended: true } if that game is over for you)
 //   browser -> server   'exit-game' {}  (reply: { ok })               leave the room for good
+//   browser -> server   'resign' {}     (reply: { ok } or { error })  give up: the opponent wins
+//   browser -> server   'offer' { type }  (reply: { ok } or { error }) offer a draw / ask for a takeback
+//   browser -> server   'answer-offer' { accept }  (reply: { ok } or { error })
+//   server  -> everyone 'offer' { type, from, status }                status: 'pending' | 'accepted' |
+//                                                                     'declined' | 'expired'
+//   server  -> everyone 'takeback' { moves, fen }                     a takeback was accepted: redraw
+//   browser -> server   'rematch' {}  (reply: { ok } or { error })    "I'd like a rematch"
+//   server  -> everyone 'rematch' { w, b }                            who has asked for a rematch
+//   server  -> everyone 'rematch-started'                             new game, colours swapped: join again
+//   server  -> everyone 'clock' { w, b, running }                     milliseconds left each; whose clock runs
 //   browser -> server   'move' { from, to, promotion? }               "I'd like to play this"
 //   server  -> everyone 'move' { from, to, promotion, san, fen }      accepted: play it
 //   server  -> sender   'move-rejected' { from, to, reason }          not allowed
@@ -47,6 +57,9 @@ import { Chess } from 'chess.js';
 // (e.g. `PORT=4000 npm run server`); otherwise it's 3050.
 const PORT = process.env.PORT || 3050;
 const GRACE_SECONDS = Number(process.env.GRACE_SECONDS) || 60; // time to come back after a disconnect
+// How many milliseconds one "minute" on the chess clocks lasts. Always a real
+// minute, except in quick automatic tests (e.g. MINUTE_MS=1000).
+const MINUTE_MS = Number(process.env.MINUTE_MS) || 60_000;
 const EMPTY_ROOM_LIFETIME = 2 * 60 * 60 * 1000; // forget rooms nobody has visited for 2 hours
 
 const app = express();
@@ -148,16 +161,81 @@ function stopGrace(seat) {
   seat.graceUntil = null;
 }
 
+// ---------------------------------------------------------------------------
+// Chess clocks. The server is the only timekeeper:
+//   room.clock = { w, b, running, since, alarm }
+//     w, b     milliseconds each player had left when their clock last stopped
+//     running  whose clock is ticking ('w' | 'b'), or null when paused
+//     since    when the running clock started (Date.now())
+//     alarm    a timer that fires the moment the running player runs out
+// Clocks only run while the game is active AND both players are connected.
+// ---------------------------------------------------------------------------
+function newClock(minutes) {
+  return minutes ? { w: minutes * MINUTE_MS, b: minutes * MINUTE_MS, running: null, since: null, alarm: null } : null;
+}
+
+// Time left for each player right now: { w, b, running } (ms).
+function clockNow(room) {
+  const c = room.clock;
+  if (!c) return null;
+  const left = { w: c.w, b: c.b };
+  if (c.running) left[c.running] = Math.max(0, left[c.running] - (Date.now() - c.since));
+  return { ...left, running: c.running };
+}
+const sendClock = (code) => rooms.get(code).clock && io.to(code).emit('clock', clockNow(rooms.get(code)));
+
+// Stop the running clock, keeping the time that was used.
+function pauseClock(room) {
+  const c = room.clock;
+  if (!c?.running) return;
+  c[c.running] = Math.max(0, c[c.running] - (Date.now() - c.since));
+  c.running = null;
+  clearTimeout(c.alarm);
+}
+
+// Start the clock of whoever is to move, if the game is live and both
+// players are here.
+function resumeClock(code) {
+  const room = rooms.get(code);
+  const c = room.clock;
+  if (!c || c.running || room.status !== 'active') return;
+  if (!room.seats.w?.socketId || !room.seats.b?.socketId) return;
+  const color = room.chess.turn();
+  c.running = color;
+  c.since = Date.now();
+  c.alarm = setTimeout(() => flag(code, color), c[color]);
+}
+
+// A player's time ran out. They lose, unless their opponent has only a
+// king left: a bare king can't checkmate, so then it's a draw.
+function flag(code, color) {
+  const room = rooms.get(code);
+  if (!room || room.status !== 'active') return;
+  pauseClock(room);
+  room.clock[color] = 0;
+  const winner = other(color);
+  const winnerPieces = room.chess.board().flat().filter((sq) => sq?.color === winner);
+  console.log(`[${code}] ${room.seats[color].name} ran out of time`);
+  if (winnerPieces.length === 1) endGame(code, null, 'timeout-insufficient', { flagged: color });
+  else endGame(code, winner, 'timeout');
+}
+
 // Ends the game: records the result, frees both players to play elsewhere,
 // and tells everyone in the room.
 //   winner: 'w' | 'b' | null (draw)
 //   reason: 'checkmate' | 'stalemate' | 'insufficient' | 'threefold' |
-//           'fifty-moves' | 'left' | 'abandoned'
-function endGame(code, winner, reason) {
+//           'fifty-moves' | 'left' | 'abandoned' | 'resigned' | 'agreed' |
+//           'timeout' | 'timeout-insufficient'
+//   extra: more details, e.g. { flagged: 'w' } (who ran out of time)
+function endGame(code, winner, reason, extra = {}) {
   const room = rooms.get(code);
   if (!room || room.status === 'over') return;
+  pauseClock(room);
+  sendClock(code);
   room.status = 'over';
-  room.result = { winner, reason, names: { w: room.seats.w?.name, b: room.seats.b?.name } };
+  room.offer = null; // any open offer dies with the game
+  room.rematch = { w: false, b: false };
+  room.result = { winner, reason, names: { w: room.seats.w?.name, b: room.seats.b?.name }, ...extra };
   for (const c of ['w', 'b']) {
     const seat = room.seats[c];
     if (!seat) continue;
@@ -211,8 +289,12 @@ io.on('connection', (socket) => {
       chess: new Chess(),
       seats: { w: null, b: null },
       settings: { time: data.time },
+      clock: newClock(data.time),
       status: 'waiting',
       result: null,
+      offer: null, // an open offer waiting for an answer: { type: 'draw' | 'takeback', from: 'w' | 'b' }
+      offerPly: { draw: { w: -1, b: -1 }, takeback: { w: -1, b: -1 } }, // move number of each player's last offer
+      rematch: { w: false, b: false }, // who has asked for a rematch (after the game is over)
       cleanupTimer: null,
     };
     room.seats[color] = { playerId: data.playerId, name, socketId: null, exited: false };
@@ -274,6 +356,8 @@ io.on('connection', (socket) => {
     }
 
     console.log(`[${roomName}] ${name} joined as ${SIDE_NAMES[color] ?? 'a spectator'}`);
+    resumeClock(roomName); // both players here now? then the clock runs
+    sendClock(roomName);
 
     // Reply with everything needed to draw the game as it is right now.
     const moves = room.chess.history({ verbose: true }).map(({ from, to, promotion }) => ({ from, to, promotion }));
@@ -285,6 +369,9 @@ io.on('connection', (socket) => {
       settings: room.settings,
       status: room.status,
       result: room.result,
+      offer: room.offer,
+      rematch: room.rematch,
+      clock: clockNow(room),
       presence: presenceOf(roomName),
     });
     sendPresence(roomName);
@@ -294,6 +381,102 @@ io.on('connection', (socket) => {
   //  - waiting for an opponent: the room is simply closed
   //  - active game: you lose, straight away, and can't come back
   //  - game already over (or watching): you just leave
+  // Every in-game request below answers with { ok } or { error }.
+  const answer = (reply, result) => typeof reply === 'function' && reply(result);
+
+  // The player in this connection's room, if this connection is a player
+  // in an active game: { room, color }. Otherwise an error message.
+  function activePlayer() {
+    const room = rooms.get(roomName);
+    const color = room && colorOf(room, socket.id);
+    if (!color) return { error: 'Only the two players can do that.' };
+    if (room.status !== 'active') return { error: 'There is no game in progress.' };
+    return { room, color };
+  }
+
+  // "Resign": give up. The opponent wins straight away.
+  socket.on('resign', (data, reply) => {
+    const { error, room, color } = activePlayer();
+    if (error) return answer(reply, { error });
+    console.log(`[${roomName}] ${room.seats[color].name} resigned`);
+    endGame(roomName, other(color), 'resigned');
+    answer(reply, { ok: true });
+  });
+
+  // Offers that the opponent must accept: a draw (or a takeback, below).
+  // Only one offer can be open at a time, and each player may make each
+  // kind of offer only once per move.
+  const OFFER_LIMIT = {
+    draw: 'You can only offer a draw once per move.',
+    takeback: 'You can only ask for one takeback per move.',
+  };
+  socket.on('offer', (data, reply) => {
+    const { error, room, color } = activePlayer();
+    if (error) return answer(reply, { error });
+    const type = data?.type;
+    if (!OFFER_LIMIT[type]) return answer(reply, { error: 'Unknown offer.' });
+    if (room.offer) return answer(reply, { error: 'There is already an offer waiting for an answer.' });
+    const ply = room.chess.history().length;
+    if (room.offerPly[type][color] === ply) return answer(reply, { error: OFFER_LIMIT[type] });
+    if (!room.seats[other(color)].socketId) return answer(reply, { error: 'Your opponent is disconnected.' });
+    if (type === 'takeback' && !room.chess.history({ verbose: true }).some((m) => m.color === color)) {
+      return answer(reply, { error: 'You have not made a move yet, so there is nothing to take back.' });
+    }
+
+    room.offer = { type, from: color };
+    room.offerPly[type][color] = ply;
+    io.to(roomName).emit('offer', { type, from: color, status: 'pending' });
+    console.log(`[${roomName}] ${room.seats[color].name} offers: ${type}`);
+    answer(reply, { ok: true });
+  });
+
+  // The opponent's answer to an open offer.
+  socket.on('answer-offer', (data, reply) => {
+    const { error, room, color } = activePlayer();
+    if (error) return answer(reply, { error });
+    const offer = room.offer;
+    if (!offer || offer.from === color) return answer(reply, { error: 'There is no offer for you to answer.' });
+
+    room.offer = null;
+    const accept = data?.accept === true;
+    io.to(roomName).emit('offer', { ...offer, status: accept ? 'accepted' : 'declined' });
+    console.log(`[${roomName}] ${room.seats[color].name} ${accept ? 'accepted' : 'declined'}: ${offer.type}`);
+    if (accept && offer.type === 'draw') endGame(roomName, null, 'agreed');
+    if (accept && offer.type === 'takeback') takeBack(room, offer.from);
+    answer(reply, { ok: true });
+  });
+
+  // Undo the asker's last move. If the opponent has already replied, that
+  // reply is undone too, so it is the asker's turn again.
+  function takeBack(room, asker) {
+    const undo = room.chess.turn() === asker ? 2 : 1;
+    for (let i = 0; i < undo; i++) room.chess.undo();
+    room.offerPly = { draw: { w: -1, b: -1 }, takeback: { w: -1, b: -1 } }; // the move count went down
+    const moves = room.chess.history({ verbose: true }).map(({ from, to, promotion }) => ({ from, to, promotion }));
+    io.to(roomName).emit('takeback', { moves, fen: room.chess.fen() });
+    pauseClock(room); // the turn changed: run the right player's clock
+    resumeClock(roomName);
+    sendClock(roomName);
+    console.log(`[${roomName}] takeback: ${undo} move(s) undone`);
+  }
+
+  // "Rematch": both players must ask. Then the same room starts a new game
+  // with the colours swapped.
+  socket.on('rematch', (data, reply) => {
+    const room = rooms.get(roomName);
+    const color = room && colorOf(room, socket.id);
+    if (!color) return answer(reply, { error: 'Only the two players can ask for a rematch.' });
+    if (room.status !== 'over') return answer(reply, { error: 'The game is not over yet.' });
+    const opponent = room.seats[other(color)];
+    if (opponent.exited) return answer(reply, { error: `${opponent.name} has left, so a rematch isn't possible.` });
+
+    room.rematch[color] = true;
+    io.to(roomName).emit('rematch', room.rematch);
+    console.log(`[${roomName}] ${room.seats[color].name} asks for a rematch`);
+    if (room.rematch.w && room.rematch.b) startRematch(roomName);
+    answer(reply, { ok: true });
+  });
+
   socket.on('exit-game', (data, reply) => {
     const room = rooms.get(roomName);
     const done = () => typeof reply === 'function' && reply({ ok: true });
@@ -310,6 +493,8 @@ io.on('connection', (socket) => {
       console.log(`[${code}] room cancelled by its creator`);
     } else if (color) {
       room.seats[color].exited = true; // game over: leaving is fine, but it's final
+      room.rematch = { w: false, b: false };
+      io.to(code).emit('rematch', room.rematch);
     }
     leaveRoom();
     done();
@@ -330,6 +515,10 @@ io.on('connection', (socket) => {
     if (room.status === 'over') return reject('The game is over.');
     if (chess.turn() !== color) return reject("It's not your turn.");
     if (!room.seats[other(color)].socketId) return reject('Your opponent is disconnected.');
+    if (room.clock && clockNow(room)[color] <= 0) {
+      flag(roomName, color); // too late: their time was already up
+      return reject('Your time ran out.');
+    }
 
     // The referee's decision: chess.js throws an error if the move is illegal.
     // (Because it's this player's turn, chess.js also makes sure they are
@@ -350,8 +539,38 @@ io.on('connection', (socket) => {
       fen: chess.fen(),
     });
     console.log(`[${roomName}] ${move.san}`);
+    // Stop the mover's clock and start the opponent's.
+    pauseClock(room);
+    resumeClock(roomName);
+    sendClock(roomName);
+    // Playing a move instead of answering lets an open offer lapse.
+    if (room.offer) {
+      io.to(roomName).emit('offer', { ...room.offer, status: 'expired' });
+      room.offer = null;
+    }
     checkBoardResult(roomName);
   });
+
+  function startRematch(code) {
+    const room = rooms.get(code);
+    const { seats } = room;
+    [seats.w, seats.b] = [seats.b, seats.w]; // swap colours
+    room.chess = new Chess();
+    room.status = 'active';
+    room.result = null;
+    room.offer = null;
+    room.offerPly = { draw: { w: -1, b: -1 }, takeback: { w: -1, b: -1 } };
+    room.rematch = { w: false, b: false };
+    room.clock = newClock(room.settings.time); // fresh clocks
+    activeGames.set(seats.w.playerId, code);
+    activeGames.set(seats.b.playerId, code);
+    for (const c of ['w', 'b']) if (!seats[c].socketId) startGrace(code, c);
+    console.log(`[${code}] rematch: ${seats.w.name} (Ivory) vs ${seats.b.name} (Obsidian)`);
+    io.to(code).emit('rematch-started');
+    sendPresence(code);
+    resumeClock(code);
+    sendClock(code);
+  }
 
   // Leaving the room: by choice (exit-game), by joining another room, or
   // because the connection dropped (refresh, closed tab, lost wifi).
@@ -365,8 +584,13 @@ io.on('connection', (socket) => {
     if (color) {
       const seat = room.seats[color];
       seat.socketId = null;
-      // In an active game, an accidental disconnect starts the grace timer.
-      if (room.status === 'active' && !seat.exited) startGrace(code, color);
+      // In an active game, an accidental disconnect starts the grace timer,
+      // and both clocks stop until the player is back.
+      if (room.status === 'active' && !seat.exited) {
+        startGrace(code, color);
+        pauseClock(room);
+        sendClock(code);
+      }
     }
     sendPresence(code);
     if (!io.sockets.adapter.rooms.get(code)?.size) scheduleCleanup(code);

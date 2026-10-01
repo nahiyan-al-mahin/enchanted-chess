@@ -30,8 +30,11 @@
         <button id="btn-flip">Flip view</button>
         <button id="btn-music" class="music-toggle">Music: on</button>
       </div>
-      <!-- The game menu (online). More options arrive in milestone 3 step 2. -->
+      <!-- The game menu (online). Options that don't apply right now are hidden. -->
       <div id="game-menu" class="hidden">
+        <button id="btn-draw" data-for="player-active">Offer draw</button>
+        <button id="btn-takeback" data-for="player-active">Request takeback</button>
+        <button id="btn-resign" data-for="player-active">Resign</button>
         <button id="btn-exit">Exit game</button>
       </div>
       <ol id="moves"></ol>
@@ -141,15 +144,27 @@
       </div>
     </div>
 
+    <!-- An offer from the opponent (draw / takeback), answered with Accept or Decline.
+         It doesn't cover the board, so the position can still be studied. -->
+    <div id="offer-prompt" class="hidden">
+      <p class="offer-text"></p>
+      <div class="intro-actions">
+        <button class="offer-no">Decline</button>
+        <button class="offer-yes intro-primary">Accept</button>
+      </div>
+    </div>
+
     <!-- Game over: the result and why -->
     <div id="gameover" class="overlay hidden">
       <div class="stone-panel">
         <h2 class="gameover-title"></h2>
         <p class="gameover-text"></p>
+        <p class="gameover-rematch"></p>
         <div class="intro-actions">
           <button data-gameover="view">View board</button>
           <button data-gameover="menu">Main menu</button>
-          <button data-gameover="new" class="intro-primary">New game</button>
+          <button data-gameover="new">New game</button>
+          <button data-gameover="rematch" class="intro-primary">Rematch</button>
         </div>
       </div>
     </div>

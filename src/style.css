@@ -485,3 +485,80 @@ body.intro-open #hud {
   font-size: 12px;
   color: #ffb27a;
 }
+
+/* An offer from the opponent: a small stone panel at the top of the screen. */
+#offer-prompt {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 15;
+  transform: translateX(-50%);
+  width: min(360px, calc(100% - 32px));
+  padding: 14px 18px 12px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(40, 33, 54, 0.96), rgba(18, 15, 27, 0.97));
+  border: 1px solid #e8c77a;
+  border-radius: 12px;
+  box-shadow: 0 0 24px rgba(232, 199, 122, 0.25), 0 16px 40px rgba(0, 0, 0, 0.6);
+}
+
+#offer-prompt.hidden {
+  display: none;
+}
+
+#offer-prompt .offer-text {
+  margin: 0;
+  font-size: 16px;
+}
+
+#offer-prompt .intro-actions {
+  margin-top: 10px;
+}
+
+#game-menu button[hidden] {
+  display: none;
+}
+
+/* Rematch status line on the game over panel. */
+.gameover-rematch {
+  min-height: 20px;
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: #9fd8ff;
+}
+
+.gameover-rematch:empty {
+  min-height: 0;
+}
+
+#gameover.peek .gameover-rematch {
+  display: none;
+}
+
+/* "Accept rematch": the opponent is waiting for you. */
+[data-gameover='rematch'].calling {
+  animation: rune-pulse 1.6s ease-in-out infinite;
+}
+
+/* Chess clocks on each player's line in the HUD. */
+#online-players .clock {
+  margin-left: auto;
+  padding: 1px 7px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 14px;
+  color: #b9b0c9;
+  background: rgba(10, 8, 16, 0.6);
+  border: 1px solid rgba(107, 90, 133, 0.6);
+  border-radius: 5px;
+}
+
+#online-players .clock.running {
+  color: #fff3d6;
+  border-color: #e8c77a;
+  box-shadow: 0 0 8px rgba(232, 199, 122, 0.35);
+}
+
+#online-players .clock.low {
+  color: #ff8a7a;
+  border-color: #ff8a7a;
+}
