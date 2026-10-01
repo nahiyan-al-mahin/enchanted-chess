@@ -15,9 +15,9 @@
       <h1>Enchanted Chess</h1>
       <div id="turn"></div>
       <div id="status"></div>
-      <!-- Online play: your colour, opponent status, messages from the server -->
+      <!-- Online play: players, opponent status, messages from the server -->
       <div id="online" class="hidden">
-        <div id="online-seat"></div>
+        <ul id="online-players"></ul>
         <div id="online-status"></div>
         <div id="online-notice"></div>
         <button id="btn-invite">Copy invite link</button>
@@ -26,9 +26,94 @@
         <button id="btn-new">New game</button>
         <button id="btn-undo">Undo</button>
         <button id="btn-flip">Flip view</button>
-        <button id="btn-music">Music: on</button>
+        <button id="btn-music" class="music-toggle">Music: on</button>
       </div>
       <ol id="moves"></ol>
+    </div>
+
+    <!-- Intro: the title screen shown before the board. Only one
+         <section> is visible at a time (see intro.js). -->
+    <div id="intro" class="hidden">
+      <div class="intro-panel">
+        <h1 class="intro-title">Enchanted Chess</h1>
+        <p class="intro-tagline">Carved stone wakes beneath the moon. Every capture shatters.</p>
+
+        <!-- Your name: shown on every screen except the waiting room -->
+        <label class="intro-name">
+          <span>Your name</span>
+          <input id="intro-name" type="text" maxlength="20" autocomplete="nickname" placeholder="e.g. Mira" />
+        </label>
+
+        <section data-screen="connecting">
+          <p class="intro-note">Reaching the game server...</p>
+        </section>
+
+        <section data-screen="menu">
+          <button class="intro-big" data-action="show-create">Create game room</button>
+          <button class="intro-big" data-action="show-join">Join with code</button>
+        </section>
+
+        <section data-screen="create">
+          <h2>Create a game room</h2>
+          <div class="intro-choice" data-choice="side">
+            <span>Your side</span>
+            <button data-value="w" class="selected">Ivory</button>
+            <button data-value="b">Obsidian</button>
+            <button data-value="random">Random</button>
+          </div>
+          <div class="intro-choice" data-choice="time">
+            <span>Time each</span>
+            <button data-value="0" class="selected">None</button>
+            <button data-value="5">5 min</button>
+            <button data-value="10">10 min</button>
+            <button data-value="15">15 min</button>
+          </div>
+          <div class="intro-actions">
+            <button data-action="back">Back</button>
+            <button class="intro-primary" data-action="create">Create room</button>
+          </div>
+        </section>
+
+        <section data-screen="join">
+          <h2>Join with code</h2>
+          <label class="intro-code">
+            <span>Room code</span>
+            <input id="intro-code" type="text" maxlength="8" autocomplete="off" placeholder="K7QX" />
+          </label>
+          <div class="intro-actions">
+            <button data-action="back">Back</button>
+            <button class="intro-primary" data-action="join">Join</button>
+          </div>
+        </section>
+
+        <section data-screen="invite">
+          <h2>You're invited to room <span class="intro-room-code" data-fill="code"></span></h2>
+          <div class="intro-actions">
+            <button data-action="back">Main menu</button>
+            <button class="intro-primary" data-action="accept-invite">Enter game</button>
+          </div>
+        </section>
+
+        <section data-screen="lobby">
+          <h2>Room code</h2>
+          <div class="intro-room-row">
+            <span class="intro-room-code big" data-fill="code"></span>
+            <button data-action="copy-code">Copy code</button>
+          </div>
+          <div class="intro-room-row">
+            <input class="intro-link" data-fill="link" type="text" readonly />
+            <button data-action="copy-link">Copy link</button>
+          </div>
+          <p class="intro-note" data-fill="summary"></p>
+          <p class="intro-waiting">Waiting for opponent...</p>
+          <div class="intro-actions">
+            <button data-action="cancel">Cancel</button>
+          </div>
+        </section>
+
+        <p class="intro-error" role="alert"></p>
+        <button class="intro-music music-toggle">Music: on</button>
+      </div>
     </div>
 
     <!-- Promotion picker: hidden until a pawn reaches the last rank -->

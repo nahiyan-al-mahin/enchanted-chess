@@ -14,14 +14,25 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Chess } from 'chess.js';
 
-import { createBoard, squareToPosition, positionToSquare } from './board.js';
+import { createBoard, squareToPosition, positionToSquare, faceLabels } from './board.js';
 import { createPiece } from './pieces.js';
 import { SmashEffects } from './smash.js';
 import { tween, updateTweens, easeInOut } from './tween.js';
 import { playMoveSound, playSmashSound, unlockAudio } from './sound.js';
 import { updateHud, askPromotion, showOnlinePanel } from './ui.js';
 import { initMusic } from './music.js';
-import { connectOnline, sendMove, inviteLink, resync } from './online.js';
+import {
+  connectOnline,
+  createRoom,
+  joinRoom,
+  sendMove,
+  inviteLink,
+  resync,
+  roomFromUrl,
+  savedSession,
+  forgetSession,
+} from './online.js';
+import { initIntro, showIntro, hideIntro, introScreen, introError, setIntroBusy, copyToClipboard } from './intro.js';
 
 // ---------------------------------------------------------------------------
 // 1. Renderer, scene, camera
@@ -125,7 +136,8 @@ const net = {
   connection: 'connecting', // 'connecting' | 'connected' | 'lost' | 'unreachable' | 'error'
   joined: false, // has the server given us a seat yet?
   color: null, // 'w', 'b', or null for a spectator
-  presence: null, // { w, b, spectators } from the server
+  presence: null, // { w: { state, name }, b: { state, name }, spectators } from the server
+  settings: null, // { time } chosen when the room was created
   waiting: false, // true after we've asked for a move, until the server answers
   notice: '', // a short message such as "It's not your turn."
 };
@@ -134,7 +146,7 @@ const net = {
 function canIMove() {
   if (isLocal) return true;
   const opponent = net.presence?.[net.color === 'w' ? 'b' : 'w'];
-  return net.connection === 'connected' && net.color === chess.turn() && opponent === 'online' && !net.waiting;
+  return net.connection === 'connected' && net.color === chess.turn() && opponent?.state === 'online' && !net.waiting;
 }
 
 // Removes all 3D pieces and rebuilds them from chess.js.
@@ -376,10 +388,8 @@ async function animatePieceMove(piece, from, to, victim) {
 document.getElementById('btn-new').addEventListener('click', () => {
   if (busy) return;
   if (!isLocal) {
-    // Online, a new game means a new room (and a new invite link).
-    if (confirm('Start a new game in a new room? You will get a new invite link to send.')) {
-      location.href = location.pathname;
-    }
+    // Online, a new game means going back to the title screen.
+    if (confirm('Leave this room and go back to the main menu?')) exitToMenu();
     return;
   }
   chess.reset();
@@ -403,6 +413,7 @@ document.getElementById('btn-undo').addEventListener('click', () => {
 let viewSide = 1;
 function setViewSide(side, animate = true) {
   viewSide = side;
+  faceLabels(side); // board letters and numbers read the right way up from this side
   const startAngle = Math.atan2(camera.position.x, camera.position.z);
   const targetAngle = viewSide === 1 ? 0 : Math.PI;
   let delta = targetAngle - startAngle;
@@ -416,9 +427,10 @@ function setViewSide(side, animate = true) {
 document.getElementById('btn-flip').addEventListener('click', () => setViewSide(-viewSide));
 
 // ---------------------------------------------------------------------------
-// 8. Online play: react to what the server tells us
+// 8. Online play: the title screen, and reacting to what the server says
 // ---------------------------------------------------------------------------
 const SIDE_NAMES = { w: 'Ivory', b: 'Obsidian' };
+const otherSide = (color) => (color === 'w' ? 'b' : 'w');
 
 // Messages from the server are handled strictly one after another: if the
 // opponent's move arrives while ours is still animating, it waits its turn.
@@ -459,17 +471,14 @@ function notify(text, seconds = 4) {
 function onlineStatus() {
   if (chess.isGameOver()) {
     if (!chess.isCheckmate()) return 'Game over: it is a draw.';
-    const winner = chess.turn() === 'w' ? 'b' : 'w';
+    const winner = otherSide(chess.turn());
     if (!net.color) return `Game over: ${SIDE_NAMES[winner]} wins.`;
     return winner === net.color ? 'Checkmate. You win!' : 'Checkmate. You lose.';
   }
   const p = net.presence;
   if (!p) return '';
-  if (!net.color) {
-    const word = { empty: 'not here yet', online: 'connected', offline: 'disconnected' };
-    return `Ivory ${word[p.w]}, Obsidian ${word[p.b]}.`;
-  }
-  const opponent = p[net.color === 'w' ? 'b' : 'w'];
+  if (!net.color) return 'You are watching this game.';
+  const opponent = p[otherSide(net.color)].state;
   if (opponent === 'empty') return 'Waiting for opponent... Send them the invite link.';
   if (opponent === 'offline') return 'Opponent disconnected. Waiting for them to come back...';
   if (net.waiting) return 'Sending move...';
@@ -478,50 +487,123 @@ function onlineStatus() {
 
 function renderOnline() {
   if (isLocal) return;
-  const seat = net.joined ? (net.color ? `You are ${SIDE_NAMES[net.color]}` : 'You are watching (spectator)') : '';
+  const p = net.presence;
+  const players =
+    net.joined && p ? ['w', 'b'].map((c) => ({ color: c, name: p[c].name, you: c === net.color, state: p[c].state })) : [];
   const status =
     {
       connecting: 'Connecting to the game server...',
       unreachable: "Can't reach the game server. Is it running? (npm run server)",
       lost: 'Connection lost. Reconnecting...',
-      error: 'The server would not let us join this room.',
     }[net.connection] ?? onlineStatus();
-  showOnlinePanel({ seat, status, notice: net.notice });
+  showOnlinePanel({ players, status, notice: net.notice });
 }
 
-function startOnline() {
+// Stores what the server told us when we (re)joined, and redraws the board.
+function applyJoin(reply) {
+  net.joined = true;
+  net.room = reply.room;
+  net.color = reply.color;
+  net.settings = reply.settings;
+  net.presence = reply.presence;
+  net.waiting = false;
+  inOrder(() => loadGame(reply.moves));
+}
+
+// After joining: wait in the lobby until there's an opponent, then play.
+function enterRoom(reply) {
+  applyJoin(reply);
+  history.replaceState(null, '', `?room=${reply.room}`); // so refreshing keeps the room
+  const opponentMissing = reply.color && reply.presence[otherSide(reply.color)].state === 'empty';
+  if (opponentMissing) {
+    const time = reply.settings.time ? `${reply.settings.time} minutes each` : 'no clock';
+    showIntro('lobby', {
+      code: reply.room,
+      link: inviteLink(reply.room),
+      summary: `You play ${SIDE_NAMES[reply.color]} · ${time}`,
+    });
+  } else {
+    startPlaying();
+  }
+}
+
+// Hide the title screen and swing the camera to our own side of the table.
+function startPlaying() {
+  hideIntro();
+  controls.autoRotate = false;
+  setViewSide(net.color === 'b' ? -1 : 1, false);
+  renderOnline();
+}
+
+// Back to the title screen, forgetting this room.
+function exitToMenu() {
+  forgetSession();
+  location.href = location.pathname;
+}
+
+// A join that went wrong on the title screen: show why, stay on the intro.
+function joinFailed(error) {
+  setIntroBusy(false);
+  introError(error);
+}
+
+async function startOnline() {
   const undo = document.getElementById('btn-undo');
   undo.disabled = true;
   undo.title = 'Undo is not available in online games';
+  document.getElementById('btn-invite').addEventListener('click', (e) => copyToClipboard(inviteLink(), e.currentTarget));
 
-  document.getElementById('btn-invite').addEventListener('click', async (e) => {
-    const button = e.currentTarget;
-    try {
-      await navigator.clipboard.writeText(inviteLink());
-      button.textContent = 'Link copied!';
-      setTimeout(() => (button.textContent = 'Copy invite link'), 2000);
-    } catch {
-      // Clipboard not allowed: show the link so it can be copied by hand.
-      prompt('Copy this link and send it to your friend:', inviteLink());
-    }
+  // While the title screen is up, the board slowly turns behind it.
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.35;
+
+  // What the title screen's buttons do. Every one of them is a request to
+  // the server; the server decides the room code, the sides and the seats.
+  initIntro({
+    async create({ name, side, time }) {
+      setIntroBusy(true);
+      const room = await createRoom({ name, side, time });
+      if (room.error) return joinFailed(room.error);
+      const reply = await joinRoom(room.room, name);
+      if (reply.error) return joinFailed(reply.error);
+      enterRoom(reply);
+    },
+    async join({ name, code }) {
+      setIntroBusy(true);
+      const reply = await joinRoom(code, name);
+      if (reply.error) return joinFailed(reply.error);
+      enterRoom(reply);
+    },
+    async acceptInvite({ name }) {
+      setIntroBusy(true);
+      const reply = await joinRoom(roomFromUrl(), name);
+      if (reply.error) return joinFailed(reply.error);
+      enterRoom(reply);
+    },
+    cancel: exitToMenu,
   });
 
   connectOnline({
-    onStatus(status, error) {
+    onStatus(status) {
       net.connection = status;
       if (status !== 'connected') net.waiting = false;
-      if (error) notify(error, 0);
+      if (introScreen()) introError(status === 'unreachable' ? "Can't reach the game server. Is it running? (npm run server)" : '');
       renderOnline();
     },
 
-    // The server gave us a seat and the game so far (also after reconnecting).
+    // We rejoined after a dropped connection (or asked for the game again).
     onJoined(reply) {
-      const firstTime = !net.joined;
-      net.joined = true;
-      net.color = reply.color;
-      net.waiting = false;
-      if (firstTime && reply.color === 'b') setViewSide(-1, false); // Obsidian sits on the far side
-      inOrder(() => loadGame(reply.moves));
+      if (reply.error) {
+        // The room is gone (e.g. the server restarted): back to the menu.
+        forgetSession();
+        history.replaceState(null, '', location.pathname);
+        net.joined = false;
+        controls.autoRotate = true;
+        showIntro('menu');
+        introError(reply.error);
+        return;
+      }
+      applyJoin(reply);
     },
 
     // A move the server accepted: now we animate it, with the usual tryMove().
@@ -546,6 +628,8 @@ function startOnline() {
 
     onPresence(presence) {
       net.presence = presence;
+      // Waiting in the lobby and the opponent just arrived? Let's play.
+      if (introScreen() === 'lobby' && presence[otherSide(net.color)].state !== 'empty') startPlaying();
       renderOnline();
     },
 
@@ -554,6 +638,29 @@ function startOnline() {
       notify('This game was opened in another tab, so this tab is now only watching.', 0);
     },
   });
+
+  // Which screen to start on:
+  //  - refreshed in the middle of a game: go straight back in
+  //  - opened an invite link: ask for a name, then join
+  //  - otherwise: the main menu
+  const urlRoom = roomFromUrl();
+  const saved = savedSession();
+  if (urlRoom && saved?.room === urlRoom) {
+    showIntro('connecting');
+    const reply = await joinRoom(urlRoom, saved.name);
+    if (reply.error) {
+      forgetSession();
+      history.replaceState(null, '', location.pathname);
+      showIntro('menu');
+      introError(reply.error);
+    } else {
+      enterRoom(reply);
+    }
+  } else if (urlRoom) {
+    showIntro('invite', { code: urlRoom });
+  } else {
+    showIntro('menu');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -603,7 +710,7 @@ window.addEventListener('resize', () => {
 rebuildPieces();
 refreshHighlights();
 updateHud(chess);
-initMusic(document.getElementById('btn-music'));
+initMusic([...document.querySelectorAll('.music-toggle')]);
 if (!isLocal) startOnline();
 frame();
 

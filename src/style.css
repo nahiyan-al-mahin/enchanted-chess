@@ -54,10 +54,6 @@ body {
   border-radius: 6px;
 }
 
-#online-seat {
-  color: #e8c77a;
-}
-
 #online-status {
   margin: 2px 0;
 }
@@ -139,4 +135,258 @@ button:hover {
   #moves {
     display: none;
   }
+}
+
+/* Players in the online panel: a rune-coloured dot, the name, and a state. */
+#online-players {
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+}
+
+#online-players li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+#online-players .dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+#online-players .dot.w {
+  background: #9fd8ff;
+  box-shadow: 0 0 6px #9fd8ff;
+}
+
+#online-players .dot.b {
+  background: #c46bff;
+  box-shadow: 0 0 6px #c46bff;
+}
+
+#online-players .player-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#online-players .you {
+  color: #e8c77a;
+}
+
+#online-players .away {
+  font-size: 12px;
+  color: #a89fb8;
+}
+
+/* ------------------------------------------------------------------------
+   Intro / title screen. The 3D board keeps turning slowly behind it.
+   ------------------------------------------------------------------------ */
+body.intro-open #hud {
+  display: none;
+}
+
+#intro {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow-y: auto;
+  /* moonlight from above, darkness around the edges */
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(160, 180, 240, 0.14), transparent 55%),
+    radial-gradient(ellipse at center, rgba(13, 11, 20, 0.3), rgba(13, 11, 20, 0.88) 80%);
+}
+
+#intro.hidden {
+  display: none;
+}
+
+.intro-panel {
+  width: min(440px, 100%);
+  padding: 28px 30px 18px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(40, 33, 54, 0.94), rgba(18, 15, 27, 0.96));
+  border: 1px solid rgba(200, 170, 110, 0.45);
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 4px rgba(20, 16, 30, 0.6),
+    0 24px 70px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.intro-title {
+  margin: 0;
+  font-size: 40px;
+  font-weight: normal;
+  letter-spacing: 2px;
+  color: #e8c77a;
+  text-shadow:
+    0 0 22px rgba(170, 190, 255, 0.35),
+    0 2px 0 #2b2236;
+}
+
+.intro-tagline {
+  margin: 6px 0 22px;
+  font-style: italic;
+  color: #b9b0c9;
+}
+
+.intro-panel h2 {
+  margin: 4px 0 14px;
+  font-size: 18px;
+  font-weight: normal;
+  color: #e9e2d0;
+}
+
+.intro-panel section[hidden],
+.intro-panel [hidden] {
+  display: none;
+}
+
+.intro-name,
+.intro-code {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 auto 18px;
+  max-width: 280px;
+  text-align: left;
+  font-size: 13px;
+  color: #b9b0c9;
+}
+
+.intro-panel input[type='text'] {
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 16px;
+  color: #f3ead6;
+  background: rgba(10, 8, 16, 0.7);
+  border: 1px solid #6b5a85;
+  border-radius: 7px;
+  outline: none;
+}
+
+.intro-panel input[type='text']:focus {
+  border-color: #e8c77a;
+  box-shadow: 0 0 0 3px rgba(232, 199, 122, 0.18);
+}
+
+#intro-code {
+  text-transform: uppercase;
+  letter-spacing: 4px;
+  text-align: center;
+  font-size: 22px;
+}
+
+.intro-big {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  margin: 0 auto 10px;
+  padding: 12px;
+  font-size: 16px;
+}
+
+.intro-primary,
+.intro-big:first-child {
+  background: #5a4675;
+  border-color: #e8c77a;
+}
+
+.intro-primary:hover,
+.intro-big:first-child:hover {
+  background: #6c5590;
+}
+
+.intro-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.intro-choice span {
+  width: 100%;
+  font-size: 13px;
+  color: #b9b0c9;
+}
+
+.intro-choice button.selected {
+  background: #5a4675;
+  border-color: #e8c77a;
+  color: #fff3d6;
+}
+
+.intro-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.intro-room-code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: 3px;
+  color: #e8c77a;
+}
+
+.intro-room-code.big {
+  font-size: 34px;
+  letter-spacing: 8px;
+  text-shadow: 0 0 16px rgba(232, 199, 122, 0.35);
+}
+
+.intro-room-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.intro-link {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px !important;
+}
+
+.intro-note {
+  margin: 8px 0;
+  font-size: 14px;
+  color: #b9b0c9;
+}
+
+/* "Waiting for opponent..." gently pulses like a breathing rune. */
+.intro-waiting {
+  margin: 14px 0 4px;
+  color: #9fd8ff;
+  animation: rune-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes rune-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.intro-error {
+  min-height: 20px;
+  margin: 12px 0 4px;
+  font-size: 14px;
+  color: #ff8a7a;
+}
+
+.intro-music {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.8;
 }

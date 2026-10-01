@@ -12,23 +12,24 @@
 // Messages (Socket.IO "events"). Some use an "acknowledgement": the sender
 // passes a callback, and the server answers it directly, like a reply.
 //
-//   browser -> server   'create-room'  (reply: { room })            make a new room
-//   browser -> server   'join' { room, playerId }                   enter a room
-//                         (reply: { color, moves, presence })       your seat + the game so far
-//   browser -> server   'move' { from, to, promotion? }             "I'd like to play this"
-//   server  -> everyone 'move' { from, to, promotion, san, fen }    accepted: play it
-//   server  -> sender   'move-rejected' { from, to, reason }        not allowed
-//   server  -> everyone 'presence' { w, b, spectators }             who is connected
-//   server  -> browser  'replaced'                                  your seat was opened in another tab
+//   browser -> server   'create-room' { playerId, name, side, time }   make a new room
+//                         (reply: { room, color })                    side 'random' is decided here
+//   browser -> server   'join' { room, playerId, name }               enter a room
+//                         (reply: { room, color, moves, settings, presence })
+//   browser -> server   'move' { from, to, promotion? }               "I'd like to play this"
+//   server  -> everyone 'move' { from, to, promotion, san, fen }      accepted: play it
+//   server  -> sender   'move-rejected' { from, to, reason }          not allowed
+//   server  -> everyone 'presence' { w, b, spectators }               who is here, with names
+//   server  -> browser  'replaced'                                    your seat was opened in another tab
 //
-// Seats: the first player in a room gets Ivory ('w'), the second Obsidian
-// ('b'), anyone else watches. Each browser tab has a secret random
-// "playerId"; a seat stays reserved for that id even while its owner is
-// disconnected, so refreshing the page puts you straight back in your seat.
+// Seats: the room's creator takes the side they chose; the next person to
+// join takes the other side; anyone after that watches. Each browser tab
+// has a secret random "playerId"; a seat stays reserved for that id even
+// while its owner is disconnected, so refreshing puts you back in your seat.
 
 import express from 'express';
 import { createServer } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { Server } from 'socket.io';
 import { Chess } from 'chess.js';
 
@@ -43,27 +44,34 @@ app.get('/health', (req, res) => res.json({ ok: true, rooms: rooms.size }));
 const httpServer = createServer(app);
 const io = new Server(httpServer);
 
-// All games, by room name:
-//   room -> { chess, seats: { w: seat|null, b: seat|null }, cleanupTimer }
-//   seat = { playerId, socketId }   (socketId is null while that player is disconnected)
+// All games, by room code (like "K7QX"):
+//   room -> { chess, seats: { w: seat|null, b: seat|null }, settings: { time }, cleanupTimer }
+//   seat = { playerId, name, socketId }   (socketId is null while that player is disconnected)
+//   settings.time = minutes per player (0 = no clock)
 const rooms = new Map();
 
+const TIME_CONTROLS = [0, 5, 10, 15];
+
 // Check everything a browser sends, so nobody can send junk.
-const isValidRoom = (room) => typeof room === 'string' && /^[a-z0-9]{3,16}$/i.test(room);
+const roomCode = (room) => (typeof room === 'string' ? room.trim().toUpperCase() : '');
+const isValidRoom = (code) => /^[A-Z0-9]{4,8}$/.test(code);
 const isValidPlayerId = (id) => typeof id === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(id);
 const isSquare = (s) => typeof s === 'string' && /^[a-h][1-8]$/.test(s);
 
-function getRoom(name) {
-  if (!rooms.has(name)) rooms.set(name, { chess: new Chess(), seats: { w: null, b: null }, cleanupTimer: null });
-  return rooms.get(name);
+// Player names: printable characters only, single spaces, at most 20 long.
+function cleanName(name) {
+  if (typeof name !== 'string') return '';
+  return name.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 20);
 }
 
-// A short random room name like "k3x9qa" that isn't already in use.
-function newRoomName() {
-  let name;
-  do name = randomBytes(6).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
-  while (name.length < 6 || rooms.has(name));
-  return name;
+// A 4-character room code like "K7QX" that isn't already in use. Letters
+// and digits that look alike (O/0, I/1) are left out so codes are easy to read out.
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function newRoomCode() {
+  let code;
+  do code = Array.from({ length: 4 }, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join('');
+  while (rooms.has(code));
+  return code;
 }
 
 // Which colour (if any) does this connection play in this room?
@@ -72,14 +80,18 @@ function colorOf(room, socketId) {
   return null;
 }
 
-// Tell everyone in the room who is here: 'empty' (nobody has taken the seat
-// yet), 'online', or 'offline' (taken, but that player is disconnected).
+// Who is in the room. For each side: { state, name }, where state is
+// 'empty' (nobody has taken the seat yet), 'online', or 'offline' (taken,
+// but that player is disconnected right now).
 function presenceOf(name) {
   const room = rooms.get(name);
-  const seatState = (seat) => (!seat ? 'empty' : seat.socketId ? 'online' : 'offline');
+  const seatInfo = (seat) => ({
+    state: !seat ? 'empty' : seat.socketId ? 'online' : 'offline',
+    name: seat?.name ?? null,
+  });
   const everyone = io.sockets.adapter.rooms.get(name)?.size ?? 0;
   const players = ['w', 'b'].filter((c) => room.seats[c]?.socketId).length;
-  return { w: seatState(room.seats.w), b: seatState(room.seats.b), spectators: everyone - players };
+  return { w: seatInfo(room.seats.w), b: seatInfo(room.seats.b), spectators: everyone - players };
 }
 const sendPresence = (name) => io.to(name).emit('presence', presenceOf(name));
 
@@ -98,28 +110,44 @@ io.on('connection', (socket) => {
   // Each connection remembers which room it is in.
   let roomName = null;
 
-  socket.on('create-room', (reply) => {
+  // A new room. The creator's chosen side is reserved for them straight
+  // away; they actually sit down when they 'join' right after this.
+  socket.on('create-room', (data, reply) => {
     if (typeof reply !== 'function') return;
-    const name = newRoomName();
-    getRoom(name);
-    scheduleCleanup(name); // in case nobody ever joins it
-    console.log(`[${name}] room created`);
-    reply({ room: name });
+    const name = cleanName(data?.name);
+    if (!isValidPlayerId(data?.playerId)) return reply({ error: 'Invalid player id.' });
+    if (!name) return reply({ error: 'Please enter your name.' });
+    if (!['w', 'b', 'random'].includes(data.side)) return reply({ error: 'Please choose a side.' });
+    if (!TIME_CONTROLS.includes(data.time)) return reply({ error: 'Please choose a time control.' });
+
+    // "Random" is decided here on the server, so nobody can rig it.
+    const color = data.side === 'random' ? (randomInt(2) ? 'w' : 'b') : data.side;
+    const code = newRoomCode();
+    const room = { chess: new Chess(), seats: { w: null, b: null }, settings: { time: data.time }, cleanupTimer: null };
+    room.seats[color] = { playerId: data.playerId, name, socketId: null };
+    rooms.set(code, room);
+    scheduleCleanup(code); // in case nobody ever joins it
+    console.log(`[${code}] room created by ${name} (${color === 'w' ? 'Ivory' : 'Obsidian'}, ${data.time || 'no'} min clock)`);
+    reply({ room: code, color });
   });
 
   socket.on('join', (data, reply) => {
     if (typeof reply !== 'function') return;
-    if (!isValidRoom(data?.room)) return reply({ error: 'Invalid room name.' });
+    const code = roomCode(data?.room);
+    const name = cleanName(data?.name);
+    if (!isValidRoom(code)) return reply({ error: 'Room codes are 4 letters or numbers, like K7QX.' });
     if (!isValidPlayerId(data?.playerId)) return reply({ error: 'Invalid player id.' });
+    if (!name) return reply({ error: 'Please enter your name.' });
+    const room = rooms.get(code);
+    if (!room) return reply({ error: `There is no game with the code ${code}. It may have ended, or the server was restarted.` });
 
-    if (roomName) leaveRoom();
-    roomName = data.room;
-    const room = getRoom(roomName);
+    if (roomName && roomName !== code) leaveRoom(); // rejoining the same room isn't leaving
+    roomName = code;
     clearTimeout(room.cleanupTimer);
     socket.join(roomName); // Socket.IO "rooms" let us message everyone in a game at once
 
     // Find this player's seat: their old one if they're coming back,
-    // otherwise the first free one. If both are taken, they spectate.
+    // otherwise the free one. If both are taken, they spectate.
     const { seats } = room;
     let color = ['w', 'b'].find((c) => seats[c]?.playerId === data.playerId) ?? null;
     if (!color) color = !seats.w ? 'w' : !seats.b ? 'b' : null;
@@ -127,26 +155,26 @@ io.on('connection', (socket) => {
       // Same player open in another tab? The newest tab takes over the seat.
       const oldSocketId = seats[color]?.socketId;
       if (oldSocketId && oldSocketId !== socket.id) io.to(oldSocketId).emit('replaced');
-      seats[color] = { playerId: data.playerId, socketId: socket.id };
+      seats[color] = { playerId: data.playerId, name, socketId: socket.id };
     }
 
     const label = { w: 'Ivory', b: 'Obsidian' }[color] ?? 'a spectator';
-    console.log(`[${roomName}] ${socket.id} joined as ${label}`);
+    console.log(`[${roomName}] ${name} joined as ${label}`);
 
     // Reply with everything needed to draw the game as it is right now.
     const moves = room.chess.history({ verbose: true }).map(({ from, to, promotion }) => ({ from, to, promotion }));
-    reply({ room: roomName, color, moves, fen: room.chess.fen() });
+    reply({ room: roomName, color, moves, fen: room.chess.fen(), settings: room.settings, presence: presenceOf(roomName) });
     sendPresence(roomName);
   });
 
   socket.on('move', (data) => {
     const reject = (reason) => socket.emit('move-rejected', { from: data?.from, to: data?.to, reason });
 
-    if (!roomName) return reject('Join a room first.');
+    const room = rooms.get(roomName);
+    if (!room) return reject('Join a room first.');
     if (!isSquare(data?.from) || !isSquare(data?.to)) return reject('Bad move format.');
     const promotion = ['q', 'r', 'b', 'n'].includes(data.promotion) ? data.promotion : undefined;
 
-    const room = getRoom(roomName);
     const { chess } = room;
     const color = colorOf(room, socket.id);
     if (!color) return reject('Spectators cannot move.');

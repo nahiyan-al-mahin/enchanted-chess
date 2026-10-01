@@ -21,7 +21,7 @@ sounds and music are original (no film names, characters or assets).
 - Source: /mnt/project-files/enchanted-chess (zip: enchanted-chess-milestone1.zip)
 - Run: `npm install`; terminal 1 `npm run server` (port 3050, PORT env
   overrides); terminal 2 `npm run dev`; open http://localhost:5173
-  (creates a room). `?local` = offline hot-seat mode with Undo.
+  (title screen). `?local` = offline hot-seat mode with Undo, no intro.
 - main.js keeps a `pieceAt` Map (square -> 3D piece) in sync with chess.js;
   every move goes through `tryMove()`, which asks chess.js first, then animates.
   Online, clicks call `requestMove()` (asks server); `tryMove()` runs only
@@ -30,9 +30,22 @@ sounds and music are original (no film names, characters or assets).
   after a move, the client re-joins to resync.
 - src/online.js is the only file using Socket.IO on the client. Player
   identity = random id in sessionStorage (per tab, survives refresh).
-- server/index.js: rooms Map -> { chess, seats {w,b: {playerId, socketId}} }.
+  sessionStorage 'enchanted-chess-session' = {room, name} lets a refresh
+  skip the name prompt and rejoin. Player name remembered in localStorage.
+- src/intro.js: title screen overlay (screens: connecting, menu, create,
+  join, invite, lobby). Only handles DOM; calls actions from main.js.
+  Board auto-rotates (OrbitControls.autoRotate) while the intro is open.
+- board.js `faceLabels(side)` turns the a-h/1-8 labels; called by
+  setViewSide(), so labels follow the camera side (incl. Flip view).
+- server/index.js: rooms Map (key = 4-char code like K7QX, no O/0/I/1) ->
+  { chess, seats {w,b: {playerId, name, socketId}}, settings {time} }.
+  Rooms are created ONLY by create-room {playerId,name,side,time}; the
+  server resolves side 'random' and reserves the creator's seat. join
+  {room,playerId,name} errors for unknown codes (codes case-insensitive).
+  presence = { w: {state,name}, b: {state,name}, spectators }.
   Seats stay reserved while disconnected (reconnect). Events: create-room
-  (ack), join (ack: color, moves), move / move-rejected, presence, replaced.
+  (ack), join (ack: color, moves, settings, presence), move /
+  move-rejected, presence, replaced.
   Moves are refused unless it's your turn and the opponent is online.
   Rooms live in memory only: restarting the server ends all games.
 - Tests: `npm run test:server` (server/test-online.js, needs server + dev).
@@ -44,7 +57,9 @@ sounds and music are original (no film names, characters or assets).
 ## Roadmap
 1. Local 3D board with full rules + smash effect (DONE 2026-10-01)
 2. Online play: Socket.IO server, rooms via share link, server-side validation (DONE 2026-10-02)
-3. Duel polish: clocks, resign/draw, rematch, reconnect, per-player orientation
+3. Duel polish: intro page, draw/resign/leave/takeback menu, game over +
+   rematch, clocks, labels facing each player (IN PROGRESS: 4 steps, user
+   tests after each step)
 4. More magic: better sculpts, idle/attack animations, original music, settings
 5. Deploy server + client
 
@@ -83,3 +98,11 @@ sounds and music are original (no film names, characters or assets).
   3: board labels read upside-down from Obsidian's side; no rematch yet
   (New game online = new room); games lost if the server restarts.
   Committed on branch milestone-2-online (1fe7f75), not yet merged to main.
+- 2026-10-02: Milestone 3, step 1 of 4 done (intro page): title screen
+  with name, Create game room (side Ivory/Obsidian/Random + time None/5/
+  10/15, stored for step 4), 4-char room codes, lobby with copy code/link
+  and "Waiting for opponent...", Join with code, invite link -> name
+  prompt, names in HUD, refresh rejoins without prompt. Board labels now
+  face the player's side. test-online.js 27/27. Next: step 2 (in-game
+  menu: draw offer, resign, leave, takeback), step 3 (game over panel +
+  rematch with colours swapped), step 4 (server-tracked clocks).

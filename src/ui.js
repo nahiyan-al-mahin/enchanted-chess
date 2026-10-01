@@ -44,16 +44,32 @@ export function updateHud(chess) {
   el.moves.scrollTop = el.moves.scrollHeight;
 }
 
-// Fills in the online panel. `lines` is { seat, status, notice }.
+// Fills in the online panel.
+//   players: [{ color: 'w'|'b', name, you, state }]  (state: 'online' | 'offline' | 'empty')
+//   status, notice: lines of text
 const online = {
   box: document.getElementById('online'),
-  seat: document.getElementById('online-seat'),
+  players: document.getElementById('online-players'),
   status: document.getElementById('online-status'),
   notice: document.getElementById('online-notice'),
 };
-export function showOnlinePanel({ seat, status, notice }) {
+export function showOnlinePanel({ players, status, notice }) {
   online.box.classList.remove('hidden');
-  online.seat.textContent = seat;
+  online.players.replaceChildren(
+    ...players.map(({ color, name, you, state }) => {
+      // Built with textContent (never innerHTML), so a name can't inject HTML.
+      const li = document.createElement('li');
+      const dot = document.createElement('span');
+      dot.className = `dot ${color}`;
+      const label = document.createElement('span');
+      label.className = 'player-name' + (you ? ' you' : '');
+      label.textContent = name ?? (color === 'w' ? 'Ivory' : 'Obsidian') + ': waiting...';
+      li.append(dot, label);
+      if (you) li.append(Object.assign(document.createElement('span'), { className: 'you', textContent: '(you)' }));
+      if (state === 'offline') li.append(Object.assign(document.createElement('span'), { className: 'away', textContent: 'disconnected' }));
+      return li;
+    })
+  );
   online.status.textContent = status;
   online.notice.textContent = notice;
 }

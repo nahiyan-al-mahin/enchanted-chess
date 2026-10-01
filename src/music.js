@@ -288,10 +288,11 @@ function saveEnabled(on) {
   }
 }
 
-export function initMusic(button) {
+// `buttons`: every "Music: on/off" button on the page (HUD and title screen).
+export function initMusic(buttons) {
   let enabled = loadEnabled();
   let unlocked = false; // browsers only allow sound after the first click
-  const showLabel = () => (button.textContent = `Music: ${enabled ? 'on' : 'off'}`);
+  const showLabel = () => buttons.forEach((b) => (b.textContent = `Music: ${enabled ? 'on' : 'off'}`));
   showLabel();
 
   // The first click or tap anywhere on the page starts the music.
@@ -304,10 +305,12 @@ export function initMusic(button) {
     { once: true }
   );
 
-  button.addEventListener('click', () => {
-    enabled = !enabled;
-    saveEnabled(enabled);
-    showLabel();
-    if (unlocked) enabled ? start() : stop();
-  });
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      enabled = !enabled;
+      saveEnabled(enabled);
+      showLabel();
+      if (unlocked) enabled ? start() : stop();
+    });
+  }
 }

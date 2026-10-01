@@ -77,6 +77,15 @@ export function createBoard() {
   return group;
 }
 
+// Every board label, so they can be turned to face whoever is playing.
+const labels = [];
+
+// Turns the letters and numbers to read the right way up from Ivory's side
+// (side = 1) or Obsidian's side (side = -1).
+export function faceLabels(side) {
+  for (const label of labels) label.rotation.z = side === 1 ? 0 : Math.PI;
+}
+
 // Writes a-h along the near/far edges and 1-8 along the sides.
 function addLabels(group) {
   const makeLabel = (text) => {
@@ -96,6 +105,7 @@ function addLabels(group) {
     );
     mesh.rotation.x = -Math.PI / 2; // lie flat on the frame
     mesh.position.y = -0.045;
+    labels.push(mesh);
     return mesh;
   };
 
