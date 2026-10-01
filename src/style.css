@@ -390,3 +390,98 @@ body.intro-open #hud {
   font-size: 12px;
   opacity: 0.8;
 }
+
+/* ------------------------------------------------------------------------
+   Game menu, confirmation box and game over panel (online play)
+   ------------------------------------------------------------------------ */
+#game-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(10, 8, 16, 0.6);
+  border: 1px solid rgba(200, 170, 110, 0.3);
+  border-radius: 8px;
+}
+
+#game-menu.hidden {
+  display: none;
+}
+
+#btn-menu[aria-expanded='true'] {
+  background: #5a4675;
+  border-color: #e8c77a;
+}
+
+/* Full-screen dimmed layer that holds a centred stone panel. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: radial-gradient(ellipse at center, rgba(13, 11, 20, 0.35), rgba(13, 11, 20, 0.8) 80%);
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.stone-panel {
+  width: min(400px, 100%);
+  padding: 24px 26px 18px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(40, 33, 54, 0.95), rgba(18, 15, 27, 0.97));
+  border: 1px solid rgba(200, 170, 110, 0.45);
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 4px rgba(20, 16, 30, 0.6),
+    0 24px 70px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.confirm-text {
+  margin: 4px 0 8px;
+  font-size: 18px;
+}
+
+.gameover-title {
+  margin: 0 0 6px;
+  font-size: 34px;
+  font-weight: normal;
+  letter-spacing: 2px;
+  color: #e8c77a;
+  text-shadow:
+    0 0 22px rgba(170, 190, 255, 0.35),
+    0 2px 0 #2b2236;
+}
+
+.gameover-text {
+  margin: 0 0 6px;
+  font-size: 16px;
+  color: #e9e2d0;
+}
+
+/* "View board" shrinks the panel to a small bar so the final position is visible. */
+#gameover.peek {
+  align-items: flex-end;
+  background: none;
+  pointer-events: none;
+}
+
+#gameover.peek .stone-panel {
+  pointer-events: auto;
+}
+
+#gameover.peek .gameover-text,
+#gameover.peek [data-gameover='view'] {
+  display: none;
+}
+
+#online-players .countdown {
+  font-size: 12px;
+  color: #ffb27a;
+}

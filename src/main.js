@@ -19,13 +19,14 @@ import { createPiece } from './pieces.js';
 import { SmashEffects } from './smash.js';
 import { tween, updateTweens, easeInOut } from './tween.js';
 import { playMoveSound, playSmashSound, unlockAudio } from './sound.js';
-import { updateHud, askPromotion, showOnlinePanel } from './ui.js';
+import { updateHud, askPromotion, showOnlinePanel, askConfirm, showGameOver } from './ui.js';
 import { initMusic } from './music.js';
 import {
   connectOnline,
   createRoom,
   joinRoom,
   sendMove,
+  exitGame,
   inviteLink,
   resync,
   roomFromUrl,
@@ -138,6 +139,9 @@ const net = {
   color: null, // 'w', 'b', or null for a spectator
   presence: null, // { w: { state, name }, b: { state, name }, spectators } from the server
   settings: null, // { time } chosen when the room was created
+  status: null, // the room: 'waiting' | 'active' | 'over' (decided by the server)
+  result: null, // { winner, reason, names } once the game is over
+  graceDeadline: { w: null, b: null }, // when a disconnected player runs out of time (local clock)
   waiting: false, // true after we've asked for a move, until the server answers
   notice: '', // a short message such as "It's not your turn."
 };
@@ -146,7 +150,13 @@ const net = {
 function canIMove() {
   if (isLocal) return true;
   const opponent = net.presence?.[net.color === 'w' ? 'b' : 'w'];
-  return net.connection === 'connected' && net.color === chess.turn() && opponent?.state === 'online' && !net.waiting;
+  return (
+    net.connection === 'connected' &&
+    net.status === 'active' &&
+    net.color === chess.turn() &&
+    opponent?.state === 'online' &&
+    !net.waiting
+  );
 }
 
 // Removes all 3D pieces and rebuilds them from chess.js.
@@ -386,12 +396,7 @@ async function animatePieceMove(piece, from, to, victim) {
 // 7. Buttons
 // ---------------------------------------------------------------------------
 document.getElementById('btn-new').addEventListener('click', () => {
-  if (busy) return;
-  if (!isLocal) {
-    // Online, a new game means going back to the title screen.
-    if (confirm('Leave this room and go back to the main menu?')) exitToMenu();
-    return;
-  }
+  if (busy || !isLocal) return; // online, new games start from the title screen
   chess.reset();
   selected = null;
   rebuildPieces();
@@ -467,20 +472,63 @@ function notify(text, seconds = 4) {
   renderOnline();
 }
 
+// "0:42" from a number of milliseconds.
+function mmss(ms) {
+  const total = Math.ceil(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+const graceLeft = (color) => (net.graceDeadline[color] ? Math.max(0, net.graceDeadline[color] - Date.now()) : null);
+
+// How the game ended, from this player's point of view: { title, text }.
+function describeResult({ winner, reason, names }) {
+  const me = net.color;
+  const youWin = !!me && winner === me;
+  const youLose = !!me && !!winner && winner !== me;
+  const winnerName = names[winner] ?? SIDE_NAMES[winner];
+  const loserName = winner ? (names[otherSide(winner)] ?? SIDE_NAMES[otherSide(winner)]) : null;
+  const title = !winner ? 'Draw' : youWin ? 'Victory' : youLose ? 'Defeat' : `${winnerName} wins`;
+  const text = {
+    checkmate: youWin ? 'Checkmate. You win!' : `Checkmate. ${winnerName} wins.`,
+    left: youWin
+      ? `${loserName} left the game. You win!`
+      : youLose
+        ? 'You left the game.'
+        : `${loserName} left the game. ${winnerName} wins.`,
+    abandoned: youWin
+      ? `${loserName} didn't come back in time. You win by abandonment.`
+      : youLose
+        ? "You didn't come back in time, so you lost by abandonment."
+        : `${loserName} didn't come back in time. ${winnerName} wins by abandonment.`,
+    stalemate: 'Stalemate. The game is a draw.',
+    insufficient: 'Not enough pieces left to checkmate. The game is a draw.',
+    threefold: 'The same position came up three times. The game is a draw.',
+    'fifty-moves': 'Fifty moves without a capture or pawn move. The game is a draw.',
+  }[reason];
+  return { title, text };
+}
+
+function showResultPanel() {
+  const { title, text } = describeResult(net.result);
+  showGameOver(title, text, {
+    menu: () => leaveRoom(''),
+    newGame: () => leaveRoom('?new'), // straight to "Create game room"
+  });
+}
+
 // The status line: whose turn it is, who's missing, or how the game ended.
 function onlineStatus() {
-  if (chess.isGameOver()) {
-    if (!chess.isCheckmate()) return 'Game over: it is a draw.';
-    const winner = otherSide(chess.turn());
-    if (!net.color) return `Game over: ${SIDE_NAMES[winner]} wins.`;
-    return winner === net.color ? 'Checkmate. You win!' : 'Checkmate. You lose.';
-  }
+  if (net.result) return describeResult(net.result).text;
   const p = net.presence;
   if (!p) return '';
   if (!net.color) return 'You are watching this game.';
-  const opponent = p[otherSide(net.color)].state;
-  if (opponent === 'empty') return 'Waiting for opponent... Send them the invite link.';
-  if (opponent === 'offline') return 'Opponent disconnected. Waiting for them to come back...';
+  const opponent = p[otherSide(net.color)];
+  if (opponent.state === 'empty') return 'Waiting for opponent... Send them the invite link.';
+  if (opponent.state === 'offline') {
+    const left = graceLeft(otherSide(net.color));
+    return left === null
+      ? 'Opponent disconnected. Waiting for them to come back...'
+      : `${opponent.name} disconnected. They have ${mmss(left)} to come back, or you win.`;
+  }
   if (net.waiting) return 'Sending move...';
   return chess.turn() === net.color ? 'Your turn.' : "Opponent's turn.";
 }
@@ -489,7 +537,15 @@ function renderOnline() {
   if (isLocal) return;
   const p = net.presence;
   const players =
-    net.joined && p ? ['w', 'b'].map((c) => ({ color: c, name: p[c].name, you: c === net.color, state: p[c].state })) : [];
+    net.joined && p
+      ? ['w', 'b'].map((c) => ({
+          color: c,
+          name: p[c].name,
+          you: c === net.color,
+          state: p[c].state,
+          countdown: p[c].state === 'offline' && graceLeft(c) !== null ? mmss(graceLeft(c)) : null,
+        }))
+      : [];
   const status =
     {
       connecting: 'Connecting to the game server...',
@@ -499,23 +555,42 @@ function renderOnline() {
   showOnlinePanel({ players, status, notice: net.notice });
 }
 
+// Keep the "come back" countdowns ticking on screen.
+setInterval(() => {
+  if (graceLeft('w') !== null || graceLeft('b') !== null) renderOnline();
+}, 500);
+
+// The server sends how many milliseconds each disconnected player has
+// left; turn that into a deadline on this computer's clock.
+function applyPresence(presence) {
+  net.presence = presence;
+  net.status = presence.status;
+  for (const c of ['w', 'b']) {
+    const left = presence[c].graceLeft;
+    net.graceDeadline[c] = left === null ? null : Date.now() + left;
+  }
+}
+
 // Stores what the server told us when we (re)joined, and redraws the board.
 function applyJoin(reply) {
   net.joined = true;
   net.room = reply.room;
   net.color = reply.color;
   net.settings = reply.settings;
-  net.presence = reply.presence;
+  net.result = reply.result;
+  applyPresence(reply.presence);
   net.waiting = false;
-  inOrder(() => loadGame(reply.moves));
+  inOrder(() => {
+    loadGame(reply.moves);
+    if (net.result) showResultPanel();
+  });
 }
 
 // After joining: wait in the lobby until there's an opponent, then play.
 function enterRoom(reply) {
   applyJoin(reply);
   history.replaceState(null, '', `?room=${reply.room}`); // so refreshing keeps the room
-  const opponentMissing = reply.color && reply.presence[otherSide(reply.color)].state === 'empty';
-  if (opponentMissing) {
+  if (reply.status === 'waiting' && reply.color) {
     const time = reply.settings.time ? `${reply.settings.time} minutes each` : 'no clock';
     showIntro('lobby', {
       code: reply.room,
@@ -527,6 +602,20 @@ function enterRoom(reply) {
   }
 }
 
+// A join attempt came back: go in, or explain why not.
+function handleJoinReply(reply) {
+  if (reply.ended) {
+    history.replaceState(null, '', location.pathname);
+    return showIntro('ended');
+  }
+  if (reply.error) {
+    if (introScreen() === 'connecting') showIntro('menu');
+    setIntroBusy(false);
+    return introError(reply.error);
+  }
+  enterRoom(reply);
+}
+
 // Hide the title screen and swing the camera to our own side of the table.
 function startPlaying() {
   hideIntro();
@@ -535,22 +624,43 @@ function startPlaying() {
   renderOnline();
 }
 
-// Back to the title screen, forgetting this room.
-function exitToMenu() {
-  forgetSession();
-  location.href = location.pathname;
+// Leave the room for good (the server is told first), then go to the
+// title screen. `then` is added to the address, e.g. '?new'.
+async function leaveRoom(then = '') {
+  await exitGame();
+  location.href = location.pathname + then;
 }
 
-// A join that went wrong on the title screen: show why, stay on the intro.
-function joinFailed(error) {
-  setIntroBusy(false);
-  introError(error);
+// "Exit game" in the game menu. In an active game this loses the game,
+// so ask first.
+async function onExitClicked() {
+  closeGameMenu();
+  if (net.color && net.status === 'active') {
+    const sure = await askConfirm('Leave and lose this game?', 'Leave and lose', 'Stay');
+    if (!sure) return;
+  }
+  leaveRoom('');
+}
+
+const menuButton = document.getElementById('btn-menu');
+const gameMenu = document.getElementById('game-menu');
+function closeGameMenu() {
+  gameMenu.classList.add('hidden');
+  menuButton.setAttribute('aria-expanded', 'false');
 }
 
 async function startOnline() {
-  const undo = document.getElementById('btn-undo');
-  undo.disabled = true;
-  undo.title = 'Undo is not available in online games';
+  // Online, "New game" and "Undo" don't exist: new games start from the
+  // title screen or the game over panel, and leaving goes through the menu.
+  document.getElementById('btn-new').classList.add('hidden');
+  document.getElementById('btn-undo').classList.add('hidden');
+  menuButton.classList.remove('hidden');
+  menuButton.addEventListener('click', () => {
+    const open = gameMenu.classList.toggle('hidden') === false;
+    menuButton.setAttribute('aria-expanded', String(open));
+    document.getElementById('btn-exit').textContent = net.color ? 'Exit game' : 'Stop watching';
+  });
+  document.getElementById('btn-exit').addEventListener('click', onExitClicked);
   document.getElementById('btn-invite').addEventListener('click', (e) => copyToClipboard(inviteLink(), e.currentTarget));
 
   // While the title screen is up, the board slowly turns behind it.
@@ -564,23 +674,17 @@ async function startOnline() {
       setIntroBusy(true);
       const room = await createRoom({ name, side, time });
       if (room.error) return joinFailed(room.error);
-      const reply = await joinRoom(room.room, name);
-      if (reply.error) return joinFailed(reply.error);
-      enterRoom(reply);
+      handleJoinReply(await joinRoom(room.room, name));
     },
     async join({ name, code }) {
       setIntroBusy(true);
-      const reply = await joinRoom(code, name);
-      if (reply.error) return joinFailed(reply.error);
-      enterRoom(reply);
+      handleJoinReply(await joinRoom(code, name));
     },
     async acceptInvite({ name }) {
       setIntroBusy(true);
-      const reply = await joinRoom(roomFromUrl(), name);
-      if (reply.error) return joinFailed(reply.error);
-      enterRoom(reply);
+      handleJoinReply(await joinRoom(roomFromUrl(), name));
     },
-    cancel: exitToMenu,
+    cancel: () => leaveRoom(''), // closes the waiting room on the server
   });
 
   connectOnline({
@@ -594,11 +698,13 @@ async function startOnline() {
     // We rejoined after a dropped connection (or asked for the game again).
     onJoined(reply) {
       if (reply.error) {
-        // The room is gone (e.g. the server restarted): back to the menu.
+        // The room is gone (e.g. the server restarted) or the game is over
+        // for us: back to the title screen.
         forgetSession();
         history.replaceState(null, '', location.pathname);
         net.joined = false;
         controls.autoRotate = true;
+        if (reply.ended) return showIntro('ended');
         showIntro('menu');
         introError(reply.error);
         return;
@@ -627,10 +733,23 @@ async function startOnline() {
     },
 
     onPresence(presence) {
-      net.presence = presence;
+      applyPresence(presence);
       // Waiting in the lobby and the opponent just arrived? Let's play.
-      if (introScreen() === 'lobby' && presence[otherSide(net.color)].state !== 'empty') startPlaying();
+      if (introScreen() === 'lobby' && presence.status !== 'waiting') startPlaying();
       renderOnline();
+    },
+
+    // The server says the game is over. Show the panel after any move
+    // that's still animating (so a checkmate is seen first).
+    onGameOver(result) {
+      net.result = result;
+      net.status = 'over';
+      selected = null;
+      refreshHighlights();
+      inOrder(() => {
+        showResultPanel();
+        renderOnline();
+      });
     },
 
     onReplaced() {
@@ -640,24 +759,24 @@ async function startOnline() {
   });
 
   // Which screen to start on:
-  //  - refreshed in the middle of a game: go straight back in
+  //  - this tab is in a game (e.g. after a refresh, or going back to the
+  //    main page mid-game): go straight back into that game. You can't
+  //    start another one until it's finished or you've used Exit game.
   //  - opened an invite link: ask for a name, then join
+  //  - came from "New game" on the game over panel: "Create game room"
   //  - otherwise: the main menu
   const urlRoom = roomFromUrl();
   const saved = savedSession();
-  if (urlRoom && saved?.room === urlRoom) {
+  if (saved && (!urlRoom || urlRoom === saved.room)) {
     showIntro('connecting');
-    const reply = await joinRoom(urlRoom, saved.name);
-    if (reply.error) {
-      forgetSession();
-      history.replaceState(null, '', location.pathname);
-      showIntro('menu');
-      introError(reply.error);
-    } else {
-      enterRoom(reply);
-    }
+    const reply = await joinRoom(saved.room, saved.name);
+    if (reply.error && !reply.ended) forgetSession();
+    handleJoinReply(reply);
   } else if (urlRoom) {
     showIntro('invite', { code: urlRoom });
+  } else if (new URLSearchParams(location.search).has('new')) {
+    history.replaceState(null, '', location.pathname);
+    showIntro(document.getElementById('intro-name').value ? 'create' : 'menu');
   } else {
     showIntro('menu');
   }

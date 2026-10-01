@@ -21,8 +21,9 @@ function player(playerId, name = playerId.split('-')[0]) {
   socket.onAny((event, data) => inbox.push({ event, data }));
   const join = (room, as = name) => new Promise((resolve) => socket.emit('join', { room, playerId, name: as }, resolve));
   const create = (side, time) => new Promise((resolve) => socket.emit('create-room', { playerId, name, side, time }, resolve));
+  const exit = () => new Promise((resolve) => socket.emit('exit-game', {}, resolve));
   const last = (event) => inbox.filter((m) => m.event === event).at(-1)?.data;
-  return { socket, inbox, join, create, last, playerId };
+  return { socket, inbox, join, create, exit, last, playerId };
 }
 
 // --- Step 1: the server referees moves ------------------------------------
@@ -83,6 +84,7 @@ await wait(200);
 obsidian.socket.close(); // like closing or refreshing the tab
 await wait(300);
 check(ivory.last('presence')?.b.state === 'offline', 'when Obsidian leaves, Ivory is told they disconnected');
+check(ivory.last('presence')?.b.graceLeft > 0, `...with a countdown (${Math.round(ivory.last('presence')?.b.graceLeft / 1000)}s to come back)`);
 ivory.socket.emit('move', { from: 'g1', to: 'f3' });
 await wait(200);
 check(ivory.last('move-rejected')?.reason === 'Your opponent is disconnected.', 'no moves while the opponent is away');
@@ -93,7 +95,13 @@ const r4 = await back.join(room);
 check(r4.color === 'b', 'after refreshing, Obsidian gets the same colour back');
 check(r4.moves.map((m) => m.from + m.to).join(' ') === 'e2e4 e7e5', 'and receives the moves so far (e4 e5)');
 await wait(200);
-check(ivory.last('presence')?.b.state === 'online', 'and Ivory is told they are back');
+check(ivory.last('presence')?.b.state === 'online' && ivory.last('presence')?.b.graceLeft === null, 'and Ivory is told they are back (countdown stopped)');
+check(!ivory.inbox.some((m) => m.event === 'game-over'), 'coming back in time does not end the game');
+
+// --- A started game can't be abandoned for a new one ----------------------
+check((await ivory.create('w', 0)).error?.includes('still playing'), 'mid-game, the server refuses to create a new room');
+const otherRoom = (await watcher.create('w', 0)).room;
+check((await ivory.join(otherRoom)).error?.includes('still playing'), 'mid-game, the server refuses to join another room');
 
 const stranger = player('someone-else-0001');
 await wait(300);
@@ -107,6 +115,58 @@ const darkRoom = (await stranger.create('b', 5)).room;
 check((await stranger.join(darkRoom)).color === 'b', 'choosing Obsidian seats the creator as Obsidian');
 check((await watcher.join(darkRoom)).color === 'w', 'and the friend who joins gets Ivory');
 
-for (const p of [ivory, watcher, back, stranger]) p.socket.close();
+// --- Exit game: the leaver loses at once and can't come back -------------
+const p1 = player('leaver-player-0001', 'Lena');
+const p2 = player('stayer-player-0001', 'Sam');
+const late = player('latecomer-player-01', 'Kit');
+await wait(400);
+const exitRoom = (await p1.create('w', 0)).room;
+await p1.join(exitRoom);
+await p2.join(exitRoom);
+p1.socket.emit('move', { from: 'e2', to: 'e4' });
+await wait(200);
+await p1.exit();
+await wait(200);
+const over = p2.last('game-over');
+check(over?.winner === 'b' && over?.reason === 'left' && over?.names.w === 'Lena', 'Exit game: opponent is told "Lena left the game" and wins');
+check((await p1.join(exitRoom)).ended === true, 'the leaver cannot rejoin ("This game has ended")');
+check((await late.join(exitRoom)).ended === true, 'nobody new can join a finished game');
+const p2back = await p2.join(exitRoom);
+check(p2back.status === 'over' && p2back.result?.reason === 'left', 'the winner can still look at the finished game');
+p2.socket.emit('move', { from: 'e7', to: 'e5' });
+await wait(200);
+check(p2.last('move-rejected')?.reason === 'The game is over.', 'no moves after the game is over');
+check(!(await p1.create('w', 0)).error, 'after the game ends, the leaver may start a new game');
+
+// --- Disconnect and don't come back: abandonment ------------------------
+const q1 = player('stays-player-00001', 'Ana');
+const q2 = player('vanishes-player-01', 'Ben');
+await wait(400);
+const goneRoom = (await q1.create('b', 0)).room;
+await q1.join(goneRoom);
+await q2.join(goneRoom);
+await wait(200);
+q2.socket.close(); // closed tab / lost wifi
+await wait(300);
+const grace = q1.last('presence')?.w.graceLeft;
+console.log(`      (waiting ${Math.round(grace / 1000)}s for Ben's time to run out...)`);
+await wait(grace + 800);
+const abandoned = q1.last('game-over');
+check(abandoned?.winner === 'b' && abandoned?.reason === 'abandoned', 'not back in time: the opponent wins by abandonment');
+const q2again = player('vanishes-player-01', 'Ben');
+await wait(300);
+const late2 = await q2again.join(goneRoom);
+check(late2.status === 'over' && late2.result?.reason === 'abandoned', 'coming back too late shows the finished game');
+
+// --- Cancelling the waiting room is fine ---------------------------------
+const lonely = player('lonely-player-0001', 'Ola');
+await wait(300);
+const lobby = (await lonely.create('w', 0)).room;
+await lonely.join(lobby);
+await lonely.exit();
+check((await late.join(lobby)).error?.includes('no game'), 'cancelling before anyone joins just closes the room');
+check(!(await lonely.create('w', 0)).error, 'and the creator may start another');
+
+for (const p of [ivory, watcher, back, stranger, p1, p2, late, q1, q2again, lonely]) p.socket.close();
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

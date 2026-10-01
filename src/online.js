@@ -65,6 +65,7 @@ export const createRoom = ({ name, side, time }) => request('create-room', { pla
 // Reply: { room, color, moves, settings, presence } or { error }.
 export async function joinRoom(room, name) {
   const reply = await request('join', { room, name, playerId });
+  if (reply.ended) forgetSession(); // that game is over for us: don't try to go back
   if (!reply.error) {
     current = { room: reply.room, name };
     // Remember this tab is in this room, so a refresh can go straight back in.
@@ -95,6 +96,13 @@ export function forgetSession() {
   }
 }
 
+// Leave the room for good. In an active game this LOSES the game.
+export async function exitGame() {
+  const reply = await request('exit-game', {});
+  forgetSession();
+  return reply;
+}
+
 // Asks the server to play a move. Nothing happens on the board until the
 // server answers with 'move' (accepted) or 'move-rejected'.
 export function sendMove({ from, to, promotion }) {
@@ -106,7 +114,7 @@ export async function resync() {
   if (current) handlers.onJoined(await joinRoom(current.room, current.name));
 }
 
-// handlers: { onStatus, onJoined, onMove, onRejected, onPresence, onReplaced }
+// handlers: { onStatus, onJoined, onMove, onRejected, onPresence, onGameOver, onReplaced }
 export function connectOnline(h) {
   handlers = h;
   socket = io(); // same address as the page; the proxy forwards it
@@ -121,5 +129,6 @@ export function connectOnline(h) {
   socket.on('move', (m) => handlers.onMove(m));
   socket.on('move-rejected', (m) => handlers.onRejected(m));
   socket.on('presence', (p) => handlers.onPresence(p));
+  socket.on('game-over', (result) => handlers.onGameOver(result));
   socket.on('replaced', () => handlers.onReplaced());
 }

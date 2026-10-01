@@ -23,10 +23,16 @@
         <button id="btn-invite">Copy invite link</button>
       </div>
       <div class="buttons">
+        <!-- New game and Undo are for local play only; online games use the Game menu -->
         <button id="btn-new">New game</button>
         <button id="btn-undo">Undo</button>
+        <button id="btn-menu" class="hidden" aria-haspopup="true" aria-expanded="false">Game menu</button>
         <button id="btn-flip">Flip view</button>
         <button id="btn-music" class="music-toggle">Music: on</button>
+      </div>
+      <!-- The game menu (online). More options arrive in milestone 3 step 2. -->
+      <div id="game-menu" class="hidden">
+        <button id="btn-exit">Exit game</button>
       </div>
       <ol id="moves"></ol>
     </div>
@@ -94,6 +100,14 @@
           </div>
         </section>
 
+        <section data-screen="ended">
+          <h2>This game has ended</h2>
+          <p class="intro-note">You can't go back into it, but you can start a new one.</p>
+          <div class="intro-actions">
+            <button class="intro-primary" data-action="back">Back to the main menu</button>
+          </div>
+        </section>
+
         <section data-screen="lobby">
           <h2>Room code</h2>
           <div class="intro-room-row">
@@ -113,6 +127,30 @@
 
         <p class="intro-error" role="alert"></p>
         <button class="intro-music music-toggle">Music: on</button>
+      </div>
+    </div>
+
+    <!-- A yes/no question in the game's own style (see askConfirm in ui.js) -->
+    <div id="confirm" class="overlay hidden">
+      <div class="stone-panel">
+        <p class="confirm-text"></p>
+        <div class="intro-actions">
+          <button class="confirm-no"></button>
+          <button class="confirm-yes intro-primary"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Game over: the result and why -->
+    <div id="gameover" class="overlay hidden">
+      <div class="stone-panel">
+        <h2 class="gameover-title"></h2>
+        <p class="gameover-text"></p>
+        <div class="intro-actions">
+          <button data-gameover="view">View board</button>
+          <button data-gameover="menu">Main menu</button>
+          <button data-gameover="new" class="intro-primary">New game</button>
+        </div>
       </div>
     </div>
 

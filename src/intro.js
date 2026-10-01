@@ -60,7 +60,7 @@ export function showIntro(name, fill = {}) {
   document.body.classList.add('intro-open');
   root.classList.remove('hidden');
   for (const section of root.querySelectorAll('section')) section.hidden = section.dataset.screen !== name;
-  nameField.hidden = name === 'lobby' || name === 'connecting';
+  nameField.hidden = name === 'lobby' || name === 'connecting' || name === 'ended';
   for (const [key, value] of Object.entries(fill)) {
     for (const el of root.querySelectorAll(`[data-fill="${key}"]`)) {
       if (el.tagName === 'INPUT') el.value = value;

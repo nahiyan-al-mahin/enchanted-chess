@@ -44,8 +44,22 @@ sounds and music are original (no film names, characters or assets).
   {room,playerId,name} errors for unknown codes (codes case-insensitive).
   presence = { w: {state,name}, b: {state,name}, spectators }.
   Seats stay reserved while disconnected (reconnect). Events: create-room
-  (ack), join (ack: color, moves, settings, presence), move /
-  move-rejected, presence, replaced.
+  (ack), join (ack: color, moves, settings, status, result, presence, or
+  {error, ended}), exit-game {} (ack), move / move-rejected, presence
+  {status,w,b,spectators}, game-over {winner,reason,names}, replaced.
+- Room status (server-enforced): 'waiting' -> 'active' (both seats taken)
+  -> 'over'. Rules: moves only while active. `activeGames` Map (playerId
+  -> room) blocks create-room/join elsewhere while a game is active.
+  exit-game: waiting = room deleted; active = leaver loses ('left'),
+  seat.exited so they can never rejoin; over = just leave. Disconnect in
+  an active game = grace timer (GRACE_SECONDS env, default 60) -> opponent
+  wins ('abandoned'). Grace also starts at game start for an absent
+  creator. Finished rooms: only non-exited seat holders may rejoin to view;
+  everyone else gets {ended:true} -> intro 'ended' screen.
+- Client: online HUD hides New game/Undo, shows "Game menu" (Exit game /
+  Stop watching). Styled askConfirm() + game over panel (View board / Main
+  menu / New game -> /?new opens Create screen) in ui.js. A tab with a
+  saved session is always sent back into its game, even from the main page.
   Moves are refused unless it's your turn and the opponent is online.
   Rooms live in memory only: restarting the server ends all games.
 - Tests: `npm run test:server` (server/test-online.js, needs server + dev).
@@ -106,3 +120,10 @@ sounds and music are original (no film names, characters or assets).
   face the player's side. test-online.js 27/27. Next: step 2 (in-game
   menu: draw offer, resign, leave, takeback), step 3 (game over panel +
   rematch with colours swapped), step 4 (server-tracked clocks).
+- 2026-10-02: Committed step 1 (66a8afe, branch milestone-3). Added the
+  "no abandoning a started game" rules (see Code notes): Exit game with
+  confirm, opponent sees "<name> left the game. You win!" + basic game over
+  panel, leaver can't rejoin (old link -> "This game has ended"), 60 s
+  reconnect countdown visible to the opponent, abandonment win. Game over
+  panel already covers step 3 except Rematch. test-online.js 41/41 (run
+  test servers with GRACE_SECONDS small; test waits for the real grace).

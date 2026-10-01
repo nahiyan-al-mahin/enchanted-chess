@@ -45,7 +45,8 @@ export function updateHud(chess) {
 }
 
 // Fills in the online panel.
-//   players: [{ color: 'w'|'b', name, you, state }]  (state: 'online' | 'offline' | 'empty')
+//   players: [{ color: 'w'|'b', name, you, state, countdown }]
+//     state: 'online' | 'offline' | 'exited' | 'empty'; countdown: e.g. '0:42' while offline
 //   status, notice: lines of text
 const online = {
   box: document.getElementById('online'),
@@ -56,7 +57,7 @@ const online = {
 export function showOnlinePanel({ players, status, notice }) {
   online.box.classList.remove('hidden');
   online.players.replaceChildren(
-    ...players.map(({ color, name, you, state }) => {
+    ...players.map(({ color, name, you, state, countdown }) => {
       // Built with textContent (never innerHTML), so a name can't inject HTML.
       const li = document.createElement('li');
       const dot = document.createElement('span');
@@ -67,11 +68,47 @@ export function showOnlinePanel({ players, status, notice }) {
       li.append(dot, label);
       if (you) li.append(Object.assign(document.createElement('span'), { className: 'you', textContent: '(you)' }));
       if (state === 'offline') li.append(Object.assign(document.createElement('span'), { className: 'away', textContent: 'disconnected' }));
+      if (state === 'exited') li.append(Object.assign(document.createElement('span'), { className: 'away', textContent: 'left' }));
+      if (countdown) li.append(Object.assign(document.createElement('span'), { className: 'countdown', textContent: countdown }));
       return li;
     })
   );
   online.status.textContent = status;
   online.notice.textContent = notice;
+}
+
+// Asks a yes/no question in a stone panel. Resolves true for yes.
+export function askConfirm(question, yesLabel, noLabel) {
+  const box = document.getElementById('confirm');
+  box.querySelector('.confirm-text').textContent = question;
+  const yes = box.querySelector('.confirm-yes');
+  const no = box.querySelector('.confirm-no');
+  yes.textContent = yesLabel;
+  no.textContent = noLabel;
+  box.classList.remove('hidden');
+  return new Promise((resolve) => {
+    const answer = (value) => () => {
+      box.classList.add('hidden');
+      yes.onclick = no.onclick = null;
+      resolve(value);
+    };
+    yes.onclick = answer(true);
+    no.onclick = answer(false);
+  });
+}
+
+// The game over panel. actions: { menu(), newGame() }
+const gameover = document.getElementById('gameover');
+export function showGameOver(title, text, actions) {
+  gameover.querySelector('.gameover-title').textContent = title;
+  gameover.querySelector('.gameover-text').textContent = text;
+  gameover.classList.remove('hidden', 'peek');
+  gameover.onclick = (e) => {
+    const which = e.target.closest('[data-gameover]')?.dataset.gameover;
+    if (which === 'view') gameover.classList.add('peek'); // shrink so the board can be seen
+    if (which === 'menu') actions.menu();
+    if (which === 'new') actions.newGame();
+  };
 }
 
 // Shows the promotion picker and resolves with 'q', 'r', 'b' or 'n'.
